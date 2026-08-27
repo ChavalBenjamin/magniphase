@@ -53,8 +53,6 @@ jobs:
         cd iPlug2/Dependencies/IPlug
         ./download-vst3-sdk.sh
 
-    
-
     - name: Cache CLAP SDK
       id: cache-clap
       uses: actions/cache@v3

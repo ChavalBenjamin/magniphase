@@ -64,8 +64,6 @@ jobs:
         cd iPlug2/Dependencies/IPlug
         ./download-vst3-sdk.sh ${{env.VST3_VER}} build-validator
 
-    
-
     - name: Cache CLAP SDK
       id: cache-clap
       uses: actions/cache@v3
