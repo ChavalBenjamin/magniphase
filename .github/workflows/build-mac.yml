@@ -23,9 +23,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        project: [TemplateProject]
+        project: [MagniPhase]
         # Add more projects here:
-        # project: [TemplateProject, VisageTemplate]
+        # project: [MagniPhase, VisageTemplate]
 
     steps:
     - name: Check out repository
@@ -64,16 +64,7 @@ jobs:
         cd iPlug2/Dependencies/IPlug
         ./download-vst3-sdk.sh ${{env.VST3_VER}} build-validator
 
-    - name: Get VST2 SDK
-      shell: bash
-      env:
-        VST2_SDK: ${{secrets.VST2_SDK}}
-      run: |
-        set -eo pipefail
-        mkdir tmp
-        echo $VST2_SDK | base64 -d > tmp/tmp.zip
-        unzip tmp/tmp.zip -d tmp
-        mv tmp/VST2_SDK/* iPlug2/Dependencies/IPlug/VST2_SDK
+    
 
     - name: Cache CLAP SDK
       id: cache-clap
@@ -130,9 +121,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        project: [TemplateProject]
+        project: [MagniPhase]
         # Add more projects here:
-        # project: [TemplateProject, VisageTemplate]
+        # project: [MagniPhase, VisageTemplate]
 
     steps:
       - name: Download artifact
