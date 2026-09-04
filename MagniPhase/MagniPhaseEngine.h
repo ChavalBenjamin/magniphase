@@ -47,6 +47,7 @@ public:
     mMagBuf.assign(mFFTSize, 0.f);
     mMagBuf2.assign(mFFTSize, 0.f);
     mPhaseBuf.assign(mFFTSize, 0.f);
+    mPhaseBuf2.assign(mFFTSize, 0.f);
 
     BuildWindowBank();
 
@@ -68,6 +69,7 @@ public:
   void SetMagMirror(float t) { mMagMirror = std::clamp(t, 0.f, 1.f); }
   void SetPhaseMirror(float t) { mPhaseMirror = std::clamp(t, 0.f, 1.f); }
   void SetFreqSwap(float t) { mFreqSwap = std::clamp(t, 0.f, 1.f); }
+  void SetFreqSwapFullComplex(bool full) { mFreqSwapFullComplex = full; }
 
   void Process(const float* in, float* out, int nFrames)
   {
@@ -275,29 +277,48 @@ private:
       mMagBuf2[k] = mMagBuf[k] * (1.f - mMagMirror) + magMirrored * mMagMirror;
     }
 
-    // Passe 3 : melange normal <-> echange grave/aigu (chaque bande
-    // echange sa magnitude avec sa bande miroir a l'autre bout du
-    // spectre) - la phase, elle, reste toujours a sa place d'origine.
-    // Resultat final (avant compensation de gain) dans mMagBuf.
+    // Passe 3 : melange normal <-> echange grave/aigu. En mode magnitude
+    // seule (par defaut), seule l'intensite est echangee, chaque bande
+    // garde sa propre phase d'origine. En mode "complet", la phase de la
+    // bande miroir est egalement empruntee - un vrai retournement du
+    // spectre plutot qu'un simple echange d'intensite.
     float newEnergy = 0.f;
     for (int k = 0; k <= numBins; k++)
     {
-      float swapped = mMagBuf2[numBins - k];
+      int partner = numBins - k;
+
+      float swapped = mMagBuf2[partner];
       float finalMag = mMagBuf2[k] * (1.f - mFreqSwap) + swapped * mFreqSwap;
       mMagBuf[k] = finalMag;
       newEnergy += finalMag * finalMag;
+
+      if (mFreqSwapFullComplex)
+      {
+        float swappedPhase = mPhaseBuf[partner];
+        mPhaseBuf2[k] = mPhaseBuf[k] * (1.f - mFreqSwap) + swappedPhase * mFreqSwap;
+      }
+      else
+      {
+        mPhaseBuf2[k] = mPhaseBuf[k]; // phase inchangee (comportement d'origine)
+      }
     }
 
     // Compensation de gain : ramene l'energie du bloc a ce qu'elle etait
-    // avant les transformations, quel que soit le melange de reglages.
+    // avant les transformations. PLAFONNEE volontairement (0.25x a 4x) :
+    // sur un spectre tres inegal (typique d'un vrai son - quelques bandes
+    // fortes, le reste quasi silencieux), aplatir la magnitude peut faire
+    // chuter tres fortement l'energie mesuree, et un rapport non plafonne
+    // pourrait demander un gain de compensation demesure (risque de pic
+    // sonore violent plutot qu'un simple rattrapage).
     float gain = std::sqrt(origEnergy / std::max(newEnergy, 1e-9f));
+    gain = std::clamp(gain, 0.25f, 4.f);
 
     // Passe finale : applique le gain de compensation, le miroir de phase,
     // et reconstruit.
     for (int k = 0; k <= numBins; k++)
     {
       float mag = mMagBuf[k] * gain;
-      float phase = mPhaseBuf[k];
+      float phase = mPhaseBuf2[k];
 
       float phaseMirrored = -phase;
       phase = phase * (1.f - mPhaseMirror) + phaseMirrored * mPhaseMirror;
@@ -334,9 +355,10 @@ private:
   std::vector<float> mRingIn, mRingOut;
   std::vector<float> mTimeBuf;
   std::vector<cplx> mCplxBuf;
-  std::vector<float> mMagBuf, mMagBuf2, mPhaseBuf;
+  std::vector<float> mMagBuf, mMagBuf2, mPhaseBuf, mPhaseBuf2;
 
   float mMagMirror = 0.f;
   float mPhaseMirror = 0.f;
   float mFreqSwap = 0.f;
+  bool mFreqSwapFullComplex = false;
 };

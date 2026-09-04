@@ -21,6 +21,7 @@ enum EParams
   kParamMagMirror,   // 0 = normal, 0.5 = tout egal, 1 = miroir complet (magnitude)
   kParamPhaseMirror, // idem, pour la phase
   kParamFreqSwap,    // 0 = normal, 1 = grave/aigu completement echanges (phase inchangee)
+  kParamFreqSwapFull,// 0 = echange magnitude seule, 1 = echange complet (magnitude + phase)
   kNumParams
 };
 
