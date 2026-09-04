@@ -45,6 +45,7 @@ public:
     mTimeBuf.resize(mFFTSize);
     mCplxBuf.assign(mFFTSize, cplx(0.f, 0.f));
     mMagBuf.assign(mFFTSize, 0.f);
+    mMagBuf2.assign(mFFTSize, 0.f);
     mPhaseBuf.assign(mFFTSize, 0.f);
 
     BuildWindowBank();
@@ -66,6 +67,7 @@ public:
   // magnitude et phase.
   void SetMagMirror(float t) { mMagMirror = std::clamp(t, 0.f, 1.f); }
   void SetPhaseMirror(float t) { mPhaseMirror = std::clamp(t, 0.f, 1.f); }
+  void SetFreqSwap(float t) { mFreqSwap = std::clamp(t, 0.f, 1.f); }
 
   void Process(const float* in, float* out, int nFrames)
   {
@@ -244,36 +246,58 @@ private:
 
     FFT(mCplxBuf, false);
 
-    // Etape 3 : effet "Mirror" - melange lineaire entre la valeur normale
-    // et son miroir, independamment pour magnitude et phase. A 0 : normal.
-    // A 0.5 : tout devient egal (toutes les bandes convergent vers la
-    // meme valeur - proprietE naturelle du melange lineaire, pas un cas
-    // special code en dur). A 1 : miroir complet.
+    // Etape 3 : effets "Mirror" (magnitude/phase) et "Freq Swap" (echange
+    // grave/aigu, phase inchangee), avec compensation automatique de gain
+    // (le volume percu peut fortement chuter quand la magnitude s'aplatit
+    // et/ou que les phases s'alignent - on remesure l'energie avant/apres
+    // et on rescale pour rester a niveau comparable, quel que soit le
+    // melange de reglages utilise).
     int numBins = mFFTSize / 2;
 
-    // Premiere passe : extrait magnitude/phase, calcule la MOYENNE du bloc
-    // (utilisee comme point de symetrie pour le miroir - PAS le maximum :
-    // dans un son reel, la plupart des bandes sont quasi-silencieuses,
-    // donc leur miroir autour du maximum serait enorme -> bruit blanc
-    // agressif des le moindre reglage. La moyenne donne un point de
-    // symetrie bien plus modere, donc une transition progressive).
-    float sumMag = 0.f;
+    // Passe 1 : extrait magnitude/phase brutes, calcule la moyenne du bloc
+    // (point de symetrie du miroir) et l'energie d'origine.
+    float sumMag = 0.f, origEnergy = 0.f;
     for (int k = 0; k <= numBins; k++)
     {
       mMagBuf[k] = std::abs(mCplxBuf[k]);
       mPhaseBuf[k] = std::arg(mCplxBuf[k]);
       sumMag += mMagBuf[k];
+      origEnergy += mMagBuf[k] * mMagBuf[k];
     }
     float avgMag = sumMag / (float)(numBins + 1);
 
-    // Deuxieme passe : applique le melange normal/miroir puis reconstruit.
+    // Passe 2 : melange normal <-> miroir (magnitude), autour de la
+    // moyenne. Resultat dans mMagBuf2 (mMagBuf reste intact, encore
+    // necessaire tel quel pour l'echange de frequence juste apres).
     for (int k = 0; k <= numBins; k++)
     {
-      float mag = mMagBuf[k];
-      float phase = mPhaseBuf[k];
+      float magMirrored = std::max(0.f, 2.f * avgMag - mMagBuf[k]);
+      mMagBuf2[k] = mMagBuf[k] * (1.f - mMagMirror) + magMirrored * mMagMirror;
+    }
 
-      float magMirrored = std::max(0.f, 2.f * avgMag - mag);
-      mag = mag * (1.f - mMagMirror) + magMirrored * mMagMirror;
+    // Passe 3 : melange normal <-> echange grave/aigu (chaque bande
+    // echange sa magnitude avec sa bande miroir a l'autre bout du
+    // spectre) - la phase, elle, reste toujours a sa place d'origine.
+    // Resultat final (avant compensation de gain) dans mMagBuf.
+    float newEnergy = 0.f;
+    for (int k = 0; k <= numBins; k++)
+    {
+      float swapped = mMagBuf2[numBins - k];
+      float finalMag = mMagBuf2[k] * (1.f - mFreqSwap) + swapped * mFreqSwap;
+      mMagBuf[k] = finalMag;
+      newEnergy += finalMag * finalMag;
+    }
+
+    // Compensation de gain : ramene l'energie du bloc a ce qu'elle etait
+    // avant les transformations, quel que soit le melange de reglages.
+    float gain = std::sqrt(origEnergy / std::max(newEnergy, 1e-9f));
+
+    // Passe finale : applique le gain de compensation, le miroir de phase,
+    // et reconstruit.
+    for (int k = 0; k <= numBins; k++)
+    {
+      float mag = mMagBuf[k] * gain;
+      float phase = mPhaseBuf[k];
 
       float phaseMirrored = -phase;
       phase = phase * (1.f - mPhaseMirror) + phaseMirrored * mPhaseMirror;
@@ -310,8 +334,9 @@ private:
   std::vector<float> mRingIn, mRingOut;
   std::vector<float> mTimeBuf;
   std::vector<cplx> mCplxBuf;
-  std::vector<float> mMagBuf, mPhaseBuf;
+  std::vector<float> mMagBuf, mMagBuf2, mPhaseBuf;
 
   float mMagMirror = 0.f;
   float mPhaseMirror = 0.f;
+  float mFreqSwap = 0.f;
 };

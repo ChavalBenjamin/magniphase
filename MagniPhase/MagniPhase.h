@@ -20,6 +20,7 @@ enum EParams
   kParamWindowMorph, // position dans la banque de fenetres (Tukey -> lobes -> complexe)
   kParamMagMirror,   // 0 = normal, 0.5 = tout egal, 1 = miroir complet (magnitude)
   kParamPhaseMirror, // idem, pour la phase
+  kParamFreqSwap,    // 0 = normal, 1 = grave/aigu completement echanges (phase inchangee)
   kNumParams
 };
 

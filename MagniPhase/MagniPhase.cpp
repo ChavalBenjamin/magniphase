@@ -10,6 +10,7 @@ MagniPhase::MagniPhase(const InstanceInfo& info)
   GetParam(kParamWindowMorph)->InitDouble("Window Morph", 0., 0., (double)(MagniPhaseEngine::kNumWindows - 1), 0.01);
   GetParam(kParamMagMirror)->InitPercentage("Mag Mirror", 0.);
   GetParam(kParamPhaseMirror)->InitPercentage("Phase Mirror", 0.);
+  GetParam(kParamFreqSwap)->InitPercentage("Freq Swap", 0.);
 
 #if IPLUG_EDITOR
   mMakeGraphicsFunc = [&]() {
@@ -35,6 +36,7 @@ MagniPhase::MagniPhase(const InstanceInfo& info)
 
     pGraphics->AttachControl(new IVKnobControl(area.GetGridCell(1, 0, 2, 3).GetCentredInside(64.f), kParamMagMirror, "Mag Mirror", knobStyle));
     pGraphics->AttachControl(new IVKnobControl(area.GetGridCell(1, 1, 2, 3).GetCentredInside(64.f), kParamPhaseMirror, "Phase Mirror", knobStyle));
+    pGraphics->AttachControl(new IVKnobControl(area.GetGridCell(1, 2, 2, 3).GetCentredInside(64.f), kParamFreqSwap, "Freq Swap", knobStyle));
   };
 #endif
 
@@ -57,6 +59,7 @@ void MagniPhase::UpdateEngineParams()
   mEngine.SetWindowMorph((float)GetParam(kParamWindowMorph)->Value());
   mEngine.SetMagMirror((float)(GetParam(kParamMagMirror)->Value() / 100.0));
   mEngine.SetPhaseMirror((float)(GetParam(kParamPhaseMirror)->Value() / 100.0));
+  mEngine.SetFreqSwap((float)(GetParam(kParamFreqSwap)->Value() / 100.0));
 }
 
 void MagniPhase::OnReset()
@@ -80,6 +83,9 @@ void MagniPhase::OnParamChange(int paramIdx)
       break;
     case kParamPhaseMirror:
       mEngine.SetPhaseMirror((float)(GetParam(kParamPhaseMirror)->Value() / 100.0));
+      break;
+    case kParamFreqSwap:
+      mEngine.SetFreqSwap((float)(GetParam(kParamFreqSwap)->Value() / 100.0));
       break;
     default:
       break;
