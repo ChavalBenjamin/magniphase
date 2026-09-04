@@ -27,7 +27,10 @@ class MagniPhaseEngine
 public:
   using cplx = std::complex<float>;
 
-  static constexpr int kNumWindows = 10;
+  static constexpr int kNumWindows = 24;
+  static constexpr int kZone1Count = 8;  // Tukey : douce -> quasi-rectangulaire
+  static constexpr int kZone2Count = 8;  // lobes multiples, nombre croissant
+  static constexpr int kZone3Count = kNumWindows - kZone1Count - kZone2Count; // formes complexes/asymetriques
 
   MagniPhaseEngine() { Init(1024, 2); }
 
@@ -82,12 +85,73 @@ private:
   {
     mWindowBank.assign(kNumWindows, std::vector<float>(mFFTSize));
 
-    for (int w = 0; w < kNumWindows; w++)
+    // --- Zone 1 : Tukey, douce -> quasi-rectangulaire. Distribution en
+    // racine carree (plutot que lineaire) : le durcissement de la pente
+    // arrive plus vite en tournant le bouton, au lieu d'etre etale sur
+    // toute la premiere moitie de sa course.
+    for (int w = 0; w < kZone1Count; w++)
     {
-      // Taper de 1.0 (le plus doux) a 0.05 (quasi rectangulaire, pente
-      // tres raide) - couvre toute la famille demandee, extremes inclus.
-      float taper = 1.0f - (float)w * (1.0f - 0.05f) / (float)(kNumWindows - 1);
+      float t = (kZone1Count > 1) ? (float)w / (float)(kZone1Count - 1) : 0.f;
+      float taper = 1.0f - std::sqrt(t) * (1.0f - 0.02f);
       BuildTukeyWindow(mWindowBank[w], taper);
+    }
+
+    // --- Zone 2 : nombre de lobes croissant. Toujours strictement nul aux
+    // deux extremites (enveloppe en sin(pi*x)) pour eviter tout clic au
+    // raccord des blocs, meme quand le nombre de cycles n'est pas entier
+    // (position intermediaire pendant un morph).
+    for (int w = 0; w < kZone2Count; w++)
+    {
+      float t = (kZone2Count > 1) ? (float)w / (float)(kZone2Count - 1) : 0.f;
+      float cycles = t * 9.f; // jusqu'a ~9 lobes supplementaires
+      BuildLobedWindow(mWindowBank[kZone1Count + w], cycles);
+    }
+
+    // --- Zone 3 : formes complexes et asymetriques (plusieurs frequences
+    // non-entieres, dephasages fixes) - complexite croissante.
+    for (int w = 0; w < kZone3Count; w++)
+    {
+      float t = (kZone3Count > 1) ? (float)w / (float)(kZone3Count - 1) : 0.f;
+      BuildComplexWindow(mWindowBank[kZone1Count + kZone2Count + w], t);
+    }
+  }
+
+  void BuildLobedWindow(std::vector<float>& dst, float cycles)
+  {
+    int N = mFFTSize;
+    for (int i = 0; i < N; i++)
+    {
+      float x = (float)i / (float)(N - 1);
+      float envelope = std::sin(kPi * x); // garantit 0 aux deux bouts, toujours
+      float raw = std::abs(std::sin(kPi * (cycles + 1.f) * x));
+      dst[i] = envelope * raw;
+    }
+  }
+
+  void BuildComplexWindow(std::vector<float>& dst, float complexity)
+  {
+    int N = mFFTSize;
+    int numHarmonics = 2 + (int)(complexity * 4.f); // de 2 a 6 composantes
+
+    for (int i = 0; i < N; i++)
+    {
+      float x = (float)i / (float)(N - 1);
+      float envelope = std::sin(kPi * x); // garantit 0 aux deux bouts
+
+      float sum = 0.f, wsum = 0.f;
+      for (int h = 0; h < numHarmonics; h++)
+      {
+        // Frequences non-entieres et dephasages fixes croissants : casse
+        // volontairement la symetrie, forme non-periodique/organique.
+        float freq = 1.3f + (float)h * 1.7f;
+        float phase = (float)h * 0.9f;
+        float amp = 1.f / (float)(h + 1);
+        sum += amp * std::sin(2.f * kPi * freq * x + phase);
+        wsum += amp;
+      }
+      sum /= wsum; // ramene approximativement a -1..1
+
+      dst[i] = envelope * (0.5f + 0.5f * sum * complexity);
     }
   }
 
