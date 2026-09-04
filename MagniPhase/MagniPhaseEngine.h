@@ -251,16 +251,20 @@ private:
     // special code en dur). A 1 : miroir complet.
     int numBins = mFFTSize / 2;
 
-    // Premiere passe : extrait magnitude/phase, trouve le maximum du bloc
-    // (necessaire pour le miroir de la magnitude, qui se fait par rapport
-    // a ce maximum).
-    float maxMag = 1e-9f;
+    // Premiere passe : extrait magnitude/phase, calcule la MOYENNE du bloc
+    // (utilisee comme point de symetrie pour le miroir - PAS le maximum :
+    // dans un son reel, la plupart des bandes sont quasi-silencieuses,
+    // donc leur miroir autour du maximum serait enorme -> bruit blanc
+    // agressif des le moindre reglage. La moyenne donne un point de
+    // symetrie bien plus modere, donc une transition progressive).
+    float sumMag = 0.f;
     for (int k = 0; k <= numBins; k++)
     {
       mMagBuf[k] = std::abs(mCplxBuf[k]);
       mPhaseBuf[k] = std::arg(mCplxBuf[k]);
-      maxMag = std::max(maxMag, mMagBuf[k]);
+      sumMag += mMagBuf[k];
     }
+    float avgMag = sumMag / (float)(numBins + 1);
 
     // Deuxieme passe : applique le melange normal/miroir puis reconstruit.
     for (int k = 0; k <= numBins; k++)
@@ -268,7 +272,7 @@ private:
       float mag = mMagBuf[k];
       float phase = mPhaseBuf[k];
 
-      float magMirrored = maxMag - mag;
+      float magMirrored = std::max(0.f, 2.f * avgMag - mag);
       mag = mag * (1.f - mMagMirror) + magMirrored * mMagMirror;
 
       float phaseMirrored = -phase;
