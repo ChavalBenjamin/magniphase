@@ -44,6 +44,8 @@ public:
     mRingOut.assign(mFFTSize, 0.f);
     mTimeBuf.resize(mFFTSize);
     mCplxBuf.assign(mFFTSize, cplx(0.f, 0.f));
+    mMagBuf.assign(mFFTSize, 0.f);
+    mPhaseBuf.assign(mFFTSize, 0.f);
 
     BuildWindowBank();
 
@@ -59,6 +61,11 @@ public:
   {
     mWindowMorph = std::clamp(morphPos, 0.f, (float)(kNumWindows - 1));
   }
+
+  // Position du melange normal <-> miroir, 0..1, independant pour
+  // magnitude et phase.
+  void SetMagMirror(float t) { mMagMirror = std::clamp(t, 0.f, 1.f); }
+  void SetPhaseMirror(float t) { mPhaseMirror = std::clamp(t, 0.f, 1.f); }
 
   void Process(const float* in, float* out, int nFrames)
   {
@@ -237,14 +244,35 @@ private:
 
     FFT(mCplxBuf, false);
 
-    // Etape 1 : extraction magnitude/phase puis reconstruction A
-    // L'IDENTIQUE (aucune modification) - valide le pipeline complet
-    // avant d'ajouter les operations des etapes suivantes.
+    // Etape 3 : effet "Mirror" - melange lineaire entre la valeur normale
+    // et son miroir, independamment pour magnitude et phase. A 0 : normal.
+    // A 0.5 : tout devient egal (toutes les bandes convergent vers la
+    // meme valeur - proprietE naturelle du melange lineaire, pas un cas
+    // special code en dur). A 1 : miroir complet.
     int numBins = mFFTSize / 2;
+
+    // Premiere passe : extrait magnitude/phase, trouve le maximum du bloc
+    // (necessaire pour le miroir de la magnitude, qui se fait par rapport
+    // a ce maximum).
+    float maxMag = 1e-9f;
     for (int k = 0; k <= numBins; k++)
     {
-      float mag = std::abs(mCplxBuf[k]);
-      float phase = std::arg(mCplxBuf[k]);
+      mMagBuf[k] = std::abs(mCplxBuf[k]);
+      mPhaseBuf[k] = std::arg(mCplxBuf[k]);
+      maxMag = std::max(maxMag, mMagBuf[k]);
+    }
+
+    // Deuxieme passe : applique le melange normal/miroir puis reconstruit.
+    for (int k = 0; k <= numBins; k++)
+    {
+      float mag = mMagBuf[k];
+      float phase = mPhaseBuf[k];
+
+      float magMirrored = maxMag - mag;
+      mag = mag * (1.f - mMagMirror) + magMirrored * mMagMirror;
+
+      float phaseMirrored = -phase;
+      phase = phase * (1.f - mPhaseMirror) + phaseMirrored * mPhaseMirror;
 
       cplx val(mag * std::cos(phase), mag * std::sin(phase));
       mCplxBuf[k] = val;
@@ -278,4 +306,8 @@ private:
   std::vector<float> mRingIn, mRingOut;
   std::vector<float> mTimeBuf;
   std::vector<cplx> mCplxBuf;
+  std::vector<float> mMagBuf, mPhaseBuf;
+
+  float mMagMirror = 0.f;
+  float mPhaseMirror = 0.f;
 };
