@@ -248,16 +248,15 @@ private:
 
     FFT(mCplxBuf, false);
 
-    // Etape 3 : effets "Mirror" (magnitude/phase) et "Freq Swap" (echange
-    // grave/aigu, phase inchangee), avec compensation automatique de gain
-    // (le volume percu peut fortement chuter quand la magnitude s'aplatit
-    // et/ou que les phases s'alignent - on remesure l'energie avant/apres
-    // et on rescale pour rester a niveau comparable, quel que soit le
-    // melange de reglages utilise).
+    // Etape 3 : Freq Swap (echange grave/aigu, en tete de chaine - une
+    // restructuration de position plus fondamentale que les deux effets
+    // "Mirror" qui suivent), puis Mag Mirror, puis Phase Mirror, avec
+    // compensation automatique de gain (le volume percu peut fortement
+    // chuter quand la magnitude s'aplatit et/ou que les phases s'alignent).
     int numBins = mFFTSize / 2;
 
     // Passe 1 : extrait magnitude/phase brutes, calcule la moyenne du bloc
-    // (point de symetrie du miroir) et l'energie d'origine.
+    // (point de symetrie du Mag Mirror) et l'energie d'origine.
     float sumMag = 0.f, origEnergy = 0.f;
     for (int k = 0; k <= numBins; k++)
     {
@@ -268,29 +267,15 @@ private:
     }
     float avgMag = sumMag / (float)(numBins + 1);
 
-    // Passe 2 : melange normal <-> miroir (magnitude), autour de la
-    // moyenne. Resultat dans mMagBuf2 (mMagBuf reste intact, encore
-    // necessaire tel quel pour l'echange de frequence juste apres).
-    for (int k = 0; k <= numBins; k++)
-    {
-      float magMirrored = std::max(0.f, 2.f * avgMag - mMagBuf[k]);
-      mMagBuf2[k] = mMagBuf[k] * (1.f - mMagMirror) + magMirrored * mMagMirror;
-    }
-
-    // Passe 3 : melange normal <-> echange grave/aigu. En mode magnitude
-    // seule (par defaut), seule l'intensite est echangee, chaque bande
-    // garde sa propre phase d'origine. En mode "complet", la phase de la
-    // bande miroir est egalement empruntee - un vrai retournement du
-    // spectre plutot qu'un simple echange d'intensite.
-    float newEnergy = 0.f;
+    // Passe 2 : Freq Swap, applique sur les valeurs BRUTES (mMagBuf,
+    // mPhaseBuf, non modifiees jusqu'ici dans ce bloc). Resultat dans
+    // mMagBuf2 / mPhaseBuf2.
     for (int k = 0; k <= numBins; k++)
     {
       int partner = numBins - k;
 
-      float swapped = mMagBuf2[partner];
-      float finalMag = mMagBuf2[k] * (1.f - mFreqSwap) + swapped * mFreqSwap;
-      mMagBuf[k] = finalMag;
-      newEnergy += finalMag * finalMag;
+      float swappedMag = mMagBuf[partner];
+      mMagBuf2[k] = mMagBuf[k] * (1.f - mFreqSwap) + swappedMag * mFreqSwap;
 
       if (mFreqSwapFullComplex)
       {
@@ -299,22 +284,31 @@ private:
       }
       else
       {
-        mPhaseBuf2[k] = mPhaseBuf[k]; // phase inchangee (comportement d'origine)
+        mPhaseBuf2[k] = mPhaseBuf[k]; // phase inchangee (mode magnitude seule)
       }
     }
 
+    // Passe 3 : Mag Mirror, applique sur le resultat du Freq Swap.
+    float newEnergy = 0.f;
+    for (int k = 0; k <= numBins; k++)
+    {
+      float magMirrored = std::max(0.f, 2.f * avgMag - mMagBuf2[k]);
+      float finalMag = mMagBuf2[k] * (1.f - mMagMirror) + magMirrored * mMagMirror;
+      mMagBuf[k] = finalMag;
+      newEnergy += finalMag * finalMag;
+    }
+
     // Compensation de gain : ramene l'energie du bloc a ce qu'elle etait
-    // avant les transformations. PLAFONNEE volontairement (0.25x a 4x) :
-    // sur un spectre tres inegal (typique d'un vrai son - quelques bandes
-    // fortes, le reste quasi silencieux), aplatir la magnitude peut faire
-    // chuter tres fortement l'energie mesuree, et un rapport non plafonne
-    // pourrait demander un gain de compensation demesure (risque de pic
-    // sonore violent plutot qu'un simple rattrapage).
+    // avant les transformations. PLAFONNEE volontairement (0.25x a 4x)
+    // pour eviter tout emballement, plus une rattrape calibree
+    // specifiquement sur le Phase Mirror (l'energie seule ne suffit pas a
+    // compenser sa perte de crete, voir GetPhaseMirrorMakeupGain()).
     float gain = std::sqrt(origEnergy / std::max(newEnergy, 1e-9f));
     gain = std::clamp(gain, 0.25f, 4.f);
+    gain *= GetPhaseMirrorMakeupGain();
 
-    // Passe finale : applique le gain de compensation, le miroir de phase,
-    // et reconstruit.
+    // Passe finale : Phase Mirror (sur le resultat du Freq Swap) puis
+    // reconstruction.
     for (int k = 0; k <= numBins; k++)
     {
       float mag = mMagBuf[k] * gain;
@@ -338,6 +332,24 @@ private:
       int idx = (start + i) % mFFTSize;
       mRingOut[idx] += mCplxBuf[i].real() * GetWindowSample(i) * normOverlap;
     }
+  }
+
+  // Rattrape de gain calibree empiriquement sur des mesures reelles :
+  // Phase Mirror provoque une perte de crete que la compensation d'energie
+  // (Parseval) ne couvre pas (l'energie totale ne depend pas de la phase,
+  // mais le niveau de crete si). Points mesures : 0% -> -8dB, 50% -> -24.5dB
+  // (perte max), 100% -> -13.5dB (remonte partiellement). Interpolation
+  // lineaire en dB entre ces 3 points de reference.
+  float GetPhaseMirrorMakeupGain() const
+  {
+    float t = mPhaseMirror;
+    float boostDb;
+    if (t <= 0.5f)
+      boostDb = 16.5f * (t / 0.5f);
+    else
+      boostDb = 16.5f + (5.5f - 16.5f) * ((t - 0.5f) / 0.5f);
+
+    return std::pow(10.f, boostDb / 20.f);
   }
 
   static constexpr float kPi = 3.14159265358979323846f;

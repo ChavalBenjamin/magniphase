@@ -1,16 +1,16 @@
 #define PLUG_NAME "MagniPhase"
-#define PLUG_MFR "TonNomSansEspace"
+#define PLUG_MFR "BEnjaminChaval"
 #define PLUG_VERSION_HEX 0x00000000
 #define PLUG_VERSION_STR "0.0.0"
 #define PLUG_UNIQUE_ID 'Hfcj'
 #define PLUG_MFR_ID 'Acme'
 #define PLUG_URL_STR "https://iplug2.github.io"
-#define PLUG_EMAIL_STR "spam@me.com"
+#define PLUG_EMAIL_STR "benjaminchaval@gmail.com"
 #define PLUG_COPYRIGHT_STR "Copyright 2025 Acme Inc"
 #define PLUG_CLASS_NAME MagniPhase
 
 #define BUNDLE_NAME "MagniPhase"
-#define BUNDLE_MFR "TonNomSansEspace"
+#define BUNDLE_MFR "BEnjaminChaval"
 #define BUNDLE_DOMAIN "com"
 
 #define SHARED_RESOURCES_SUBPATH "MagniPhase"
