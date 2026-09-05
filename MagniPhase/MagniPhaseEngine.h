@@ -70,6 +70,8 @@ public:
   void SetPhaseMirror(float t) { mPhaseMirror = std::clamp(t, 0.f, 1.f); }
   void SetFreqSwap(float t) { mFreqSwap = std::clamp(t, 0.f, 1.f); }
   void SetFreqSwapFullComplex(bool full) { mFreqSwapFullComplex = full; }
+  void SetSwapWindowSize(float size) { mSwapWindowSize = std::clamp(size, 0.f, 1.f); }
+  void SetSwapWindowPosition(float pos) { mSwapWindowPosition = std::clamp(pos, 0.f, 1.f); }
 
   void Process(const float* in, float* out, int nFrames)
   {
@@ -268,23 +270,37 @@ private:
     float avgMag = sumMag / (float)(numBins + 1);
 
     // Passe 2 : Freq Swap, applique sur les valeurs BRUTES (mMagBuf,
-    // mPhaseBuf, non modifiees jusqu'ici dans ce bloc). Resultat dans
-    // mMagBuf2 / mPhaseBuf2.
+    // mPhaseBuf, non modifiees jusqu'ici dans ce bloc) - mais uniquement
+    // A L'INTERIEUR d'une fenetre reglable (taille + position dans le
+    // spectre), miroir autour du CENTRE DE LA FENETRE (pas du centre du
+    // spectre entier). En dehors de la fenetre : inchange.
+    int windowBins = std::max(2, (int)std::round(mSwapWindowSize * (float)numBins));
+    int windowStart = (int)std::round(mSwapWindowPosition * (float)(numBins - windowBins));
+    int windowEnd = windowStart + windowBins;
+
     for (int k = 0; k <= numBins; k++)
     {
-      int partner = numBins - k;
-
-      float swappedMag = mMagBuf[partner];
-      mMagBuf2[k] = mMagBuf[k] * (1.f - mFreqSwap) + swappedMag * mFreqSwap;
-
-      if (mFreqSwapFullComplex)
+      if (k >= windowStart && k <= windowEnd)
       {
-        float swappedPhase = mPhaseBuf[partner];
-        mPhaseBuf2[k] = mPhaseBuf[k] * (1.f - mFreqSwap) + swappedPhase * mFreqSwap;
+        int partner = windowStart + (windowEnd - k);
+
+        float swappedMag = mMagBuf[partner];
+        mMagBuf2[k] = mMagBuf[k] * (1.f - mFreqSwap) + swappedMag * mFreqSwap;
+
+        if (mFreqSwapFullComplex)
+        {
+          float swappedPhase = mPhaseBuf[partner];
+          mPhaseBuf2[k] = mPhaseBuf[k] * (1.f - mFreqSwap) + swappedPhase * mFreqSwap;
+        }
+        else
+        {
+          mPhaseBuf2[k] = mPhaseBuf[k];
+        }
       }
       else
       {
-        mPhaseBuf2[k] = mPhaseBuf[k]; // phase inchangee (mode magnitude seule)
+        mMagBuf2[k] = mMagBuf[k];
+        mPhaseBuf2[k] = mPhaseBuf[k];
       }
     }
 
@@ -373,4 +389,6 @@ private:
   float mPhaseMirror = 0.f;
   float mFreqSwap = 0.f;
   bool mFreqSwapFullComplex = false;
+  float mSwapWindowSize = 1.f;     // 1 = tout le spectre (comportement d'origine)
+  float mSwapWindowPosition = 0.f; // 0 = fenetre collee au grave
 };
