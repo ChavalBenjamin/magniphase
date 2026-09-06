@@ -6,31 +6,41 @@
 #include <algorithm>
 
 // ============================================================================
-// GlitchEngine
+// GlitchEngine (stereo)
 //
 // Reproduit l'artefact classique de dissimulation de perte de paquets
-// (VoIP/WhatsApp) : capture un tres court fragment du signal ("la photo",
-// duree fixe), puis le boucle rapidement avant de relacher.
+// (VoIP/WhatsApp) : capture un tres court fragment stereo du signal ("la
+// photo", duree fixe, LES DEUX CANAUX ENSEMBLE pour garder une image
+// stereo coherente), puis le boucle avant de relacher.
 //
-// DEUX sources de declenchement INDEPENDANTES, qui ne se melangent pas :
+// DEUX sources de declenchement INDEPENDANTES :
 //
-//  - SIDE-CHAIN (Freeze Time) : une vraie enveloppe qui ne fait RIEN sans
-//    signal recu sur l'entree Aux. Le glitch reste actif tant que le
-//    side-chain est present, puis continue encore "Freeze Time" ms apres
-//    sa disparition (temps de maintien) avant de relacher.
+//  - SIDE-CHAIN (Aux, mono) : une vraie enveloppe qui ne fait RIEN sans
+//    signal recu. Le glitch reste actif tant que l'Aux est present, puis
+//    continue "Freeze Time" ms de plus (temps de maintien) avant de
+//    relacher et reprendre le cours normal - exactement comme une "photo"
+//    qui capture puis relache.
 //
-//  - DECLENCHEMENT INTERNE (Poisson/Rafales/Duree variable) : totalement
-//    independant du side-chain, avec sa PROPRE duree courte (decorellee
-//    de Freeze Time) et un taux volontairement RARE par defaut. Le delai
-//    avant le prochain declenchement est calcule directement via une loi
-//    exponentielle (methode standard pour un vrai processus de Poisson) -
-//    plus robuste numeriquement qu'un tirage de probabilite a chaque
-//    echantillon, qui peut devenir peu fiable a tres faible taux.
+//  - DECLENCHEMENT INTERNE : Rate regle la frequence moyenne (de "jamais"
+//    a "tres souvent", echelle logarithmique pour une sensation naturelle
+//    sur tout le parcours du bouton), le Mode regle le CARACTERE de
+//    chaque evenement - pense pour rester chaotique et imprevisible meme
+//    une fois le mecanisme connu (seul l'Aux reste un declenchement
+//    volontaire/previsible) :
 //
-// Un interrupteur general (SetEnabled) desactive tout le module d'un coup
-// (passthrough pur). Un filet de securite force par ailleurs un retour a
-// la normale si un glitch (side-chain ou interne) dure anormalement
-// longtemps, quelle qu'en soit la cause.
+//    0 = Poisson       : declenchements isoles, aucune structure, aucune
+//                        memoire du passe.
+//    1 = Rafales       : chaque declenchement a une chance ALEATOIRE de
+//                        se transformer en rafale (nombre ET espacement
+//                        entre les coups tous aleatoires) - jamais deux
+//                        rafales identiques.
+//    2 = Duree Variable: chaque evenement dure une duree tiree sur une
+//                        PLAGE LARGE (d'un accroc tres bref a un
+//                        decrochage nettement plus long), sans previsibilite.
+//
+// Un interrupteur general (SetEnabled) desactive tout le module d'un coup.
+// Un filet de securite force un retour a la normale si un glitch dure
+// anormalement longtemps, quelle qu'en soit la cause.
 // ============================================================================
 
 class GlitchEngine
@@ -42,10 +52,12 @@ public:
   {
     mSampleRate = sampleRate;
     mFragmentSamples = std::max(4, (int)(kFragmentMs * 0.001 * sampleRate));
-    mFragmentBuf.assign(mFragmentSamples, 0.f);
+    mFragmentBufL.assign(mFragmentSamples, 0.f);
+    mFragmentBufR.assign(mFragmentSamples, 0.f);
     mState = State::Idle;
     mTriggerSource = Source::None;
     mPendingBurstCount = 0;
+    mBurstGapRemaining = 0;
     mSidechainHangoverSamples = 0;
     mSafetySamplesElapsed = 0;
     ScheduleNextInternalTrigger();
@@ -53,34 +65,37 @@ public:
 
   void SetEnabled(bool enabled) { mEnabled = enabled; }
 
-  // Temps de maintien (ms) APRES la disparition du signal side-chain,
-  // avant de relacher. Ne concerne QUE le side-chain.
+  // Temps de maintien (ms) APRES la disparition du signal Aux, avant de
+  // relacher. Ne concerne QUE le side-chain.
   void SetFreezeTime(float ms) { mFreezeTimeMs = std::clamp(ms, 20.f, 10000.f); }
 
-  // Vitesse du declenchement aleatoire INTERNE, 0 (tres rare) a 1 (rare a
-  // occasionnel - volontairement jamais "frequent", pour que le son reste
-  // intact la plupart du temps).
+  // Vitesse du declenchement interne, 0 (jamais) a 1 (tres souvent).
+  // Echelle logarithmique : ~0.01 evenement/s au minimum utile jusqu'a
+  // ~10 evenements/s au maximum, pour une sensation naturelle sur tout
+  // le parcours du bouton plutot qu'une plage trop etroite.
   void SetRandomRate(float rate01)
   {
     rate01 = std::clamp(rate01, 0.f, 1.f);
-    mEventsPerSecond = 0.01f + rate01 * 0.59f; // ~1 tous les 100s -> ~1 toutes les 1.7s au max
+    mEventsPerSecond = (rate01 <= 0.001f) ? 0.f : std::pow(10.f, -2.f + rate01 * 3.f);
   }
 
   void SetGlitchMode(int mode) { mGlitchMode = std::clamp(mode, 0, 2); }
 
-  // in = signal a traiter, sidechain = signal de declenchement (peut etre
-  // nullptr si aucune side-chain n'est disponible), out = sortie.
-  void Process(const float* in, const float* sidechain, float* out, int nFrames)
+  // inL/inR = signal a traiter (stereo), sidechain = signal Aux mono de
+  // declenchement (peut etre nullptr si non disponible), outL/outR = sortie.
+  void Process(const float* inL, const float* inR, const float* sidechain,
+               float* outL, float* outR, int nFrames)
   {
     for (int i = 0; i < nFrames; i++)
     {
       if (!mEnabled)
       {
-        out[i] = in[i];
+        outL[i] = inL[i];
+        outR[i] = inR[i];
         continue;
       }
 
-      // --- Side-chain : vraie enveloppe, ne fait rien sans signal ---
+      // --- Side-chain (Aux) : vraie enveloppe, ne fait rien sans signal ---
       bool sidechainActive = sidechain && std::abs(sidechain[i]) > kSidechainThreshold;
 
       if (sidechainActive)
@@ -100,14 +115,26 @@ public:
       // --- Declenchement interne, independant, seulement si rien d'actif ---
       if (mState == State::Idle)
       {
-        mSamplesUntilNextTrigger--;
-        if (mSamplesUntilNextTrigger <= 0)
+        if (mBurstGapRemaining > 0)
         {
-          TriggerGlitch(Source::Internal);
-          mInternalSamplesRemaining = ComputeInternalDurationSamples();
-          if (mGlitchMode == (int)Mode::Rafales)
-            mPendingBurstCount = 1 + (std::rand() % 3);
-          ScheduleNextInternalTrigger();
+          mBurstGapRemaining--;
+          if (mBurstGapRemaining <= 0 && mPendingBurstCount > 0)
+          {
+            mPendingBurstCount--;
+            TriggerGlitch(Source::Internal);
+            mInternalSamplesRemaining = ComputeInternalDurationSamples();
+          }
+        }
+        else if (mEventsPerSecond > 0.f)
+        {
+          mSamplesUntilNextTrigger--;
+          if (mSamplesUntilNextTrigger <= 0)
+          {
+            TriggerGlitch(Source::Internal);
+            mInternalSamplesRemaining = ComputeInternalDurationSamples();
+            MaybeScheduleBurst();
+            ScheduleNextInternalTrigger();
+          }
         }
       }
 
@@ -127,21 +154,25 @@ public:
         mSafetySamplesElapsed = 0;
       }
 
-      float sample = in[i];
+      float sL = inL[i], sR = inR[i];
 
       switch (mState)
       {
         case State::Idle:
-          out[i] = sample;
+          outL[i] = sL;
+          outR[i] = sR;
           break;
 
         case State::Capturing:
-          mFragmentBuf[mCaptureIdx] = sample;
-          out[i] = sample; // passthrough pendant la capture (tres brieve)
+          mFragmentBufL[mCaptureIdx] = sL;
+          mFragmentBufR[mCaptureIdx] = sR;
+          outL[i] = sL; // passthrough pendant la capture (tres brieve)
+          outR[i] = sR;
           mCaptureIdx++;
           if (mCaptureIdx >= mFragmentSamples)
           {
-            SmoothLoopSeam();
+            SmoothLoopSeam(mFragmentBufL);
+            SmoothLoopSeam(mFragmentBufR);
             mCaptureIdx = 0;
             mState = State::Looping;
             mLoopReadPos = 0;
@@ -149,26 +180,20 @@ public:
           break;
 
         case State::Looping:
-          out[i] = mFragmentBuf[mLoopReadPos];
+          outL[i] = mFragmentBufL[mLoopReadPos];
+          outR[i] = mFragmentBufR[mLoopReadPos];
           mLoopReadPos = (mLoopReadPos + 1) % mFragmentSamples;
 
-          // La sortie de boucle du side-chain est geree plus haut (enveloppe).
-          // Ici, seule la duree INTERNE est decomptee.
+          // La sortie de boucle du side-chain est geree plus haut
+          // (enveloppe). Ici, seule la duree INTERNE est decomptee.
           if (mTriggerSource == Source::Internal)
           {
             mInternalSamplesRemaining--;
             if (mInternalSamplesRemaining <= 0)
             {
+              mState = State::Idle;
               if (mPendingBurstCount > 0)
-              {
-                mPendingBurstCount--;
-                TriggerGlitch(Source::Internal);
-                mInternalSamplesRemaining = ComputeInternalDurationSamples();
-              }
-              else
-              {
-                mState = State::Idle;
-              }
+                mBurstGapRemaining = RandomBurstGapSamples();
             }
           }
           break;
@@ -190,14 +215,33 @@ private:
 
   // Calcule le delai jusqu'au prochain declenchement interne via une loi
   // exponentielle (methode standard pour simuler un vrai processus de
-  // Poisson) - robuste numeriquement, contrairement a un tirage de
-  // probabilite brute a chaque echantillon qui devient peu fiable quand
-  // le taux est tres faible.
+  // Poisson) - robuste numeriquement.
   void ScheduleNextInternalTrigger()
   {
+    if (mEventsPerSecond <= 0.f) { mSamplesUntilNextTrigger = 0x7fffffff; return; }
     float u = std::max(1e-6f, (float)std::rand() / (float)RAND_MAX);
     float intervalSec = -std::log(u) / mEventsPerSecond;
     mSamplesUntilNextTrigger = (int)(intervalSec * mSampleRate);
+  }
+
+  // Mode Rafales : chance ALEATOIRE (pas systematique) que ce
+  // declenchement devienne une rafale, avec un nombre de coups
+  // supplementaires lui aussi aleatoire. L'espacement entre les coups
+  // (RandomBurstGapSamples) est egalement variable a chaque fois.
+  void MaybeScheduleBurst()
+  {
+    mPendingBurstCount = 0;
+    if (mGlitchMode != (int)Mode::Rafales) return;
+
+    float r = (float)std::rand() / (float)RAND_MAX;
+    if (r < 0.35f) // ~35% de chance qu'un declenchement devienne une rafale
+      mPendingBurstCount = 1 + (std::rand() % 4); // 1 a 4 coups supplementaires
+  }
+
+  int RandomBurstGapSamples() const
+  {
+    float ms = 10.f + ((float)std::rand() / (float)RAND_MAX) * 180.f; // 10-190ms, variable a chaque coup
+    return (int)(ms * 0.001f * mSampleRate);
   }
 
   int ComputeInternalDurationSamples() const
@@ -205,23 +249,24 @@ private:
     float ms = kInternalBaseMs;
     if (mGlitchMode == (int)Mode::DureeVariable)
     {
-      float factor = 0.3f + ((float)std::rand() / (float)RAND_MAX) * 1.7f; // 0.3x a 2x
-      ms = std::clamp(kInternalBaseMs * factor, 30.f, 2000.f);
+      // Plage large et deliberement imprevisible : d'un accroc tres bref
+      // a un decrochage nettement plus long.
+      float factor = 0.1f + ((float)std::rand() / (float)RAND_MAX) * 4.9f; // 0.1x a 5x
+      ms = std::clamp(kInternalBaseMs * factor, 15.f, 3000.f);
     }
     return (int)(ms * 0.001f * mSampleRate);
   }
 
   // Lisse le point de bouclage du fragment capture (evite un clic a
-  // chaque repetition) - meme principe que le raccord de boucle des
-  // tables d'onde de TroisCorpsWave.
-  void SmoothLoopSeam()
+  // chaque repetition).
+  void SmoothLoopSeam(std::vector<float>& buf)
   {
     int fadeLen = std::max(2, mFragmentSamples / 10);
     for (int i = 0; i < fadeLen; i++)
     {
       float t = (float)i / (float)fadeLen;
       int idx = mFragmentSamples - fadeLen + i;
-      mFragmentBuf[idx] = mFragmentBuf[idx] * (1.f - t) + mFragmentBuf[0] * t;
+      buf[idx] = buf[idx] * (1.f - t) + buf[0] * t;
     }
   }
 
@@ -229,25 +274,26 @@ private:
   Source mTriggerSource = Source::None;
 
   static constexpr float kFragmentMs = 15.f;      // taille fixe de la "photo"
-  static constexpr float kInternalBaseMs = 150.f; // duree de base des glitches internes (independante de Freeze Time)
+  static constexpr float kInternalBaseMs = 150.f; // duree de base des glitches internes
   static constexpr float kSidechainThreshold = 0.05f;
-  static constexpr int kMaxGlitchSamples = 5 * 48000; // filet de securite absolu : 5s max (a 48kHz ou moins)
+  static constexpr int kMaxGlitchSamples = 5 * 48000; // filet de securite absolu
 
   bool mEnabled = false;
 
   double mSampleRate = 44100.0;
   int mFragmentSamples = 661;
-  std::vector<float> mFragmentBuf;
+  std::vector<float> mFragmentBufL, mFragmentBufR;
   int mCaptureIdx = 0;
   int mLoopReadPos = 0;
   int mSafetySamplesElapsed = 0;
 
-  float mFreezeTimeMs = 200.f;   // side-chain uniquement (temps de maintien)
+  float mFreezeTimeMs = 200.f;
   int mSidechainHangoverSamples = 0;
 
-  float mEventsPerSecond = 0.01f;
+  float mEventsPerSecond = 0.f;
   int mGlitchMode = 0;
   int mSamplesUntilNextTrigger = 0;
   int mInternalSamplesRemaining = 0;
   int mPendingBurstCount = 0;
+  int mBurstGapRemaining = 0;
 };
