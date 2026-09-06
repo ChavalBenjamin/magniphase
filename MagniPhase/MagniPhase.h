@@ -21,9 +21,9 @@ enum EParams
   kParamMagMirror,   // 0 = normal, 0.5 = tout egal, 1 = miroir complet (magnitude)
   kParamPhaseMirror, // idem, pour la phase
   kParamFreqSwap,    // 0 = normal, 1 = grave/aigu completement echanges (phase inchangee)
-  kParamFreqSwapFull,// 0 = echange magnitude seule, 1 = echange complet (magnitude + phase)
   kParamSwapWindowSize,     // 0-1 : largeur de la zone concernee par Freq Swap (1 = tout le spectre)
-  kParamSwapWindowPosition, // 0-1 : position de cette zone dans le spectre (0 = grave, 1 = aigu)
+  kParamSwapWindowPosition, // 0-1 : position de cette zone dans le spectre (deforme, voir moteur)
+  kParamInvertUpstream,     // Off/On : inversion complete magnitude+phase, en amont de tout le reste
   kNumParams
 };
 

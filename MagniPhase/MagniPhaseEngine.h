@@ -47,7 +47,6 @@ public:
     mMagBuf.assign(mFFTSize, 0.f);
     mMagBuf2.assign(mFFTSize, 0.f);
     mPhaseBuf.assign(mFFTSize, 0.f);
-    mPhaseBuf2.assign(mFFTSize, 0.f);
 
     BuildWindowBank();
 
@@ -69,9 +68,30 @@ public:
   void SetMagMirror(float t) { mMagMirror = std::clamp(t, 0.f, 1.f); }
   void SetPhaseMirror(float t) { mPhaseMirror = std::clamp(t, 0.f, 1.f); }
   void SetFreqSwap(float t) { mFreqSwap = std::clamp(t, 0.f, 1.f); }
-  void SetFreqSwapFullComplex(bool full) { mFreqSwapFullComplex = full; }
   void SetSwapWindowSize(float size) { mSwapWindowSize = std::clamp(size, 0.f, 1.f); }
-  void SetSwapWindowPosition(float pos) { mSwapWindowPosition = std::clamp(pos, 0.f, 1.f); }
+
+  // Position de la fenetre de Freq Swap, avec deformation non-lineaire :
+  // les 50% premiers du parcours du bouton couvrent les 15% premiers de
+  // la valeur reelle (zone la plus sensible/utile, dilatee pour plus de
+  // precision), le reste suit une courbe exponentielle. rawT = position
+  // brute du bouton (0-1, linaire, ce que le parametre iPlug2 envoie).
+  void SetSwapWindowPosition(float rawT)
+  {
+    rawT = std::clamp(rawT, 0.f, 1.f);
+    constexpr float kSplitKnob = 0.5f;   // 50% du bouton...
+    constexpr float kSplitValue = 0.15f; // ...= 15% premiers de la valeur
+    constexpr float kExpPower = 2.5f;    // durete de la courbe sur le reste
+
+    if (rawT <= kSplitKnob)
+      mSwapWindowPosition = (rawT / kSplitKnob) * kSplitValue;
+    else
+    {
+      float s = (rawT - kSplitKnob) / (1.f - kSplitKnob);
+      mSwapWindowPosition = kSplitValue + (1.f - kSplitValue) * std::pow(s, kExpPower);
+    }
+  }
+
+  void SetInvertUpstream(bool invert) { mInvertUpstream = invert; }
 
   void Process(const float* in, float* out, int nFrames)
   {
@@ -258,7 +278,8 @@ private:
     int numBins = mFFTSize / 2;
 
     // Passe 1 : extrait magnitude/phase brutes, calcule la moyenne du bloc
-    // (point de symetrie du Mag Mirror) et l'energie d'origine.
+    // (point de symetrie du Mag Mirror ET de l'inversion en amont) et
+    // l'energie d'origine.
     float sumMag = 0.f, origEnergy = 0.f;
     for (int k = 0; k <= numBins; k++)
     {
@@ -269,11 +290,23 @@ private:
     }
     float avgMag = sumMag / (float)(numBins + 1);
 
-    // Passe 2 : Freq Swap, applique sur les valeurs BRUTES (mMagBuf,
-    // mPhaseBuf, non modifiees jusqu'ici dans ce bloc) - mais uniquement
-    // A L'INTERIEUR d'une fenetre reglable (taille + position dans le
-    // spectre), miroir autour du CENTRE DE LA FENETRE (pas du centre du
-    // spectre entier). En dehors de la fenetre : inchange.
+    // Passe 1bis : inversion complete EN AMONT (magnitude autour de la
+    // moyenne, phase autour de zero) - si activee, etablit une nouvelle
+    // base sur laquelle Freq Swap et Mag Mirror agiront ensuite.
+    if (mInvertUpstream)
+    {
+      for (int k = 0; k <= numBins; k++)
+      {
+        mMagBuf[k] = std::max(0.f, 2.f * avgMag - mMagBuf[k]);
+        mPhaseBuf[k] = -mPhaseBuf[k];
+      }
+    }
+
+    // Passe 2 : Freq Swap (magnitude seulement - la phase de chaque bande
+    // reste toujours a sa place d'origine), applique uniquement A
+    // L'INTERIEUR d'une fenetre reglable (taille + position dans le
+    // spectre), miroir autour du CENTRE DE LA FENETRE. En dehors de la
+    // fenetre : inchange.
     int windowBins = std::max(2, (int)std::round(mSwapWindowSize * (float)numBins));
     int windowStart = (int)std::round(mSwapWindowPosition * (float)(numBins - windowBins));
     int windowEnd = windowStart + windowBins;
@@ -283,24 +316,12 @@ private:
       if (k >= windowStart && k <= windowEnd)
       {
         int partner = windowStart + (windowEnd - k);
-
         float swappedMag = mMagBuf[partner];
         mMagBuf2[k] = mMagBuf[k] * (1.f - mFreqSwap) + swappedMag * mFreqSwap;
-
-        if (mFreqSwapFullComplex)
-        {
-          float swappedPhase = mPhaseBuf[partner];
-          mPhaseBuf2[k] = mPhaseBuf[k] * (1.f - mFreqSwap) + swappedPhase * mFreqSwap;
-        }
-        else
-        {
-          mPhaseBuf2[k] = mPhaseBuf[k];
-        }
       }
       else
       {
         mMagBuf2[k] = mMagBuf[k];
-        mPhaseBuf2[k] = mPhaseBuf[k];
       }
     }
 
@@ -323,12 +344,12 @@ private:
     gain = std::clamp(gain, 0.25f, 4.f);
     gain *= GetPhaseMirrorMakeupGain();
 
-    // Passe finale : Phase Mirror (sur le resultat du Freq Swap) puis
-    // reconstruction.
+    // Passe finale : Phase Mirror (sur la phase issue de la passe 1bis,
+    // inversee ou non selon Invert Upstream) puis reconstruction.
     for (int k = 0; k <= numBins; k++)
     {
       float mag = mMagBuf[k] * gain;
-      float phase = mPhaseBuf2[k];
+      float phase = mPhaseBuf[k];
 
       float phaseMirrored = -phase;
       phase = phase * (1.f - mPhaseMirror) + phaseMirrored * mPhaseMirror;
@@ -383,12 +404,12 @@ private:
   std::vector<float> mRingIn, mRingOut;
   std::vector<float> mTimeBuf;
   std::vector<cplx> mCplxBuf;
-  std::vector<float> mMagBuf, mMagBuf2, mPhaseBuf, mPhaseBuf2;
+  std::vector<float> mMagBuf, mMagBuf2, mPhaseBuf;
 
   float mMagMirror = 0.f;
   float mPhaseMirror = 0.f;
   float mFreqSwap = 0.f;
-  bool mFreqSwapFullComplex = false;
   float mSwapWindowSize = 1.f;     // 1 = tout le spectre (comportement d'origine)
   float mSwapWindowPosition = 0.f; // 0 = fenetre collee au grave
+  bool mInvertUpstream = false;    // inversion complete magnitude+phase, en amont de tout le reste
 };
