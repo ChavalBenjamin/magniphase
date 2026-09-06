@@ -7,8 +7,8 @@ MagniPhase::MagniPhase(const InstanceInfo& info)
 {
   GetParam(kParamFFTSize)->InitEnum("FFT Size", 1, 3, "", IParam::kFlagsNone, "", "512", "1024", "2048");
   GetParam(kParamOverlap)->InitEnum("Overlap", 0, 2, "", IParam::kFlagsNone, "", "2x", "4x");
-  GetParam(kParamWindowCycles)->InitDouble("Cycles", 0., 0., 12., 0.01);
-  GetParam(kParamWindowPixelLevels)->InitDouble("Pixel", 64., 2., 64., 0.1);
+  GetParam(kParamWindowCycles)->InitDouble("Cycles", 1., 1., 12., 0.01);
+  GetParam(kParamWindowPixelLevels)->InitPercentage("Pixel", 0.);
   GetParam(kParamMagMirror)->InitPercentage("Mag Mirror", 0.);
   GetParam(kParamPhaseMirror)->InitPercentage("Phase Mirror", 0.);
   GetParam(kParamFreqSwap)->InitPercentage("Freq Swap", 0.);
@@ -94,7 +94,7 @@ void MagniPhase::UpdateEngineParams()
 
   mEngine.Init(fftSize, overlap);
   mEngine.SetWindowCycles((float)GetParam(kParamWindowCycles)->Value());
-  mEngine.SetWindowPixelLevels((float)GetParam(kParamWindowPixelLevels)->Value());
+  mEngine.SetWindowPixelAmount((float)(GetParam(kParamWindowPixelLevels)->Value() / 100.0));
   mEngine.SetMagMirror((float)(GetParam(kParamMagMirror)->Value() / 100.0));
   mEngine.SetPhaseMirror((float)(GetParam(kParamPhaseMirror)->Value() / 100.0));
   mEngine.SetFreqSwap((float)(GetParam(kParamFreqSwap)->Value() / 100.0));
@@ -126,7 +126,7 @@ void MagniPhase::OnParamChange(int paramIdx)
       mEngine.SetWindowCycles((float)GetParam(kParamWindowCycles)->Value());
       break;
     case kParamWindowPixelLevels:
-      mEngine.SetWindowPixelLevels((float)GetParam(kParamWindowPixelLevels)->Value());
+      mEngine.SetWindowPixelAmount((float)(GetParam(kParamWindowPixelLevels)->Value() / 100.0));
       break;
     case kParamMagMirror:
       mEngine.SetMagMirror((float)(GetParam(kParamMagMirror)->Value() / 100.0));

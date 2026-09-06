@@ -59,16 +59,26 @@ public:
   //  - Pixel  : resolution de quantification (bas = anguleux/triangulaire,
   //    haut = lisse) - applique un effet d'escalier sur la courbe brute
   //    avant de l'envelopper (garantit toujours 0 aux deux bouts).
+  //
+  // Cycles est mis a l'echelle par rapport a la taille FFT (reference :
+  // 1024) : une meme valeur de Cycles couvre alors une duree reelle
+  // comparable, quelle que soit la taille FFT choisie - sans ca, une
+  // fenetre plus grande "etale" les memes cycles sur plus de temps reel,
+  // changeant le caractere du son pour un meme reglage de bouton.
   void SetWindowCycles(float cycles)
   {
-    cycles = std::max(0.f, cycles);
-    if (cycles != mWindowCycles) { mWindowCycles = cycles; mWindowDirty = true; }
+    cycles = std::max(1.f, cycles);
+    if (cycles != mWindowCyclesBase) { mWindowCyclesBase = cycles; mWindowDirty = true; }
   }
 
-  void SetWindowPixelLevels(float levels)
+  // Quantite de "pixelisation" (0 = aucune, sinus parfait ; 1 = tres
+  // anguleux/triangulaire). A 0 exactement, la quantification est
+  // completement court-circuitee : garantit un sinus mathematiquement
+  // parfait, pas juste une approximation tres fine.
+  void SetWindowPixelAmount(float amount01)
   {
-    levels = std::max(2.f, levels);
-    if (levels != mWindowPixelLevels) { mWindowPixelLevels = levels; mWindowDirty = true; }
+    amount01 = std::clamp(amount01, 0.f, 1.f);
+    if (amount01 != mWindowPixelAmount) { mWindowPixelAmount = amount01; mWindowDirty = true; }
   }
 
   // Pour l'affichage (WindowPreviewControl) : derniere fenetre generee,
@@ -139,12 +149,23 @@ private:
     if (!mWindowDirty) return;
     mWindowDirty = false;
 
+    // Cycles mis a l'echelle par rapport a la taille FFT (reference 1024).
+    float effectiveCycles = mWindowCyclesBase * ((float)mFFTSize / 1024.f);
+
+    // Pixel : 0 = sinus parfait (pas de quantification), 1 = tres
+    // anguleux (2 paliers seulement).
+    float levels = 256.f - mWindowPixelAmount * (256.f - 2.f);
+
     int N = mFFTSize;
     for (int i = 0; i < N; i++)
     {
       float x = (float)i / (float)(N - 1);
-      float raw = std::abs(std::sin(kPi * (mWindowCycles + 1.f) * x));
-      float quantized = std::round(raw * mWindowPixelLevels) / mWindowPixelLevels;
+      float raw = std::abs(std::sin(kPi * effectiveCycles * x));
+
+      float quantized = (mWindowPixelAmount <= 0.0001f)
+        ? raw // court-circuite la quantification : sinus mathematiquement parfait
+        : std::round(raw * levels) / levels;
+
       float envelope = std::sin(kPi * x); // garantit 0 aux deux bouts
       mCurrentWindow[i] = envelope * quantized;
     }
@@ -337,8 +358,8 @@ private:
   int mWritePos = 0;
   int mReadPos = 0;
 
-  float mWindowCycles = 0.f;
-  float mWindowPixelLevels = 64.f;
+  float mWindowCyclesBase = 1.f;
+  float mWindowPixelAmount = 0.f;
   bool mWindowDirty = true;
   std::vector<float> mCurrentWindow;
   std::vector<float> mWindowUIBuf;
