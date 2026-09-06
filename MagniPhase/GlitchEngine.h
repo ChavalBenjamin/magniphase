@@ -21,12 +21,16 @@
 //
 //  - DECLENCHEMENT INTERNE (Poisson/Rafales/Duree variable) : totalement
 //    independant du side-chain, avec sa PROPRE duree courte (decorellee
-//    de Freeze Time) et un taux volontairement RARE par defaut - l'effet
-//    "probleme de connexion" doit laisser le son intact la tres grande
-//    majorite du temps, ponctue de temps en temps seulement.
+//    de Freeze Time) et un taux volontairement RARE par defaut. Le delai
+//    avant le prochain declenchement est calcule directement via une loi
+//    exponentielle (methode standard pour un vrai processus de Poisson) -
+//    plus robuste numeriquement qu'un tirage de probabilite a chaque
+//    echantillon, qui peut devenir peu fiable a tres faible taux.
 //
 // Un interrupteur general (SetEnabled) desactive tout le module d'un coup
-// (passthrough pur).
+// (passthrough pur). Un filet de securite force par ailleurs un retour a
+// la normale si un glitch (side-chain ou interne) dure anormalement
+// longtemps, quelle qu'en soit la cause.
 // ============================================================================
 
 class GlitchEngine
@@ -43,6 +47,8 @@ public:
     mTriggerSource = Source::None;
     mPendingBurstCount = 0;
     mSidechainHangoverSamples = 0;
+    mSafetySamplesElapsed = 0;
+    ScheduleNextInternalTrigger();
   }
 
   void SetEnabled(bool enabled) { mEnabled = enabled; }
@@ -94,15 +100,31 @@ public:
       // --- Declenchement interne, independant, seulement si rien d'actif ---
       if (mState == State::Idle)
       {
-        float probPerSample = mEventsPerSecond / (float)mSampleRate;
-        float r = (float)std::rand() / (float)RAND_MAX;
-        if (r < probPerSample)
+        mSamplesUntilNextTrigger--;
+        if (mSamplesUntilNextTrigger <= 0)
         {
           TriggerGlitch(Source::Internal);
           mInternalSamplesRemaining = ComputeInternalDurationSamples();
           if (mGlitchMode == (int)Mode::Rafales)
             mPendingBurstCount = 1 + (std::rand() % 3);
+          ScheduleNextInternalTrigger();
         }
+      }
+
+      // --- Filet de securite : force un retour a la normale si un glitch
+      // (quelle qu'en soit la source) dure anormalement longtemps.
+      if (mState != State::Idle)
+      {
+        mSafetySamplesElapsed++;
+        if (mSafetySamplesElapsed > kMaxGlitchSamples)
+        {
+          mState = State::Idle;
+          mSafetySamplesElapsed = 0;
+        }
+      }
+      else
+      {
+        mSafetySamplesElapsed = 0;
       }
 
       float sample = in[i];
@@ -163,6 +185,19 @@ private:
     mState = State::Capturing;
     mCaptureIdx = 0;
     mTriggerSource = source;
+    mSafetySamplesElapsed = 0;
+  }
+
+  // Calcule le delai jusqu'au prochain declenchement interne via une loi
+  // exponentielle (methode standard pour simuler un vrai processus de
+  // Poisson) - robuste numeriquement, contrairement a un tirage de
+  // probabilite brute a chaque echantillon qui devient peu fiable quand
+  // le taux est tres faible.
+  void ScheduleNextInternalTrigger()
+  {
+    float u = std::max(1e-6f, (float)std::rand() / (float)RAND_MAX);
+    float intervalSec = -std::log(u) / mEventsPerSecond;
+    mSamplesUntilNextTrigger = (int)(intervalSec * mSampleRate);
   }
 
   int ComputeInternalDurationSamples() const
@@ -196,6 +231,7 @@ private:
   static constexpr float kFragmentMs = 15.f;      // taille fixe de la "photo"
   static constexpr float kInternalBaseMs = 150.f; // duree de base des glitches internes (independante de Freeze Time)
   static constexpr float kSidechainThreshold = 0.05f;
+  static constexpr int kMaxGlitchSamples = 5 * 48000; // filet de securite absolu : 5s max (a 48kHz ou moins)
 
   bool mEnabled = false;
 
@@ -204,12 +240,14 @@ private:
   std::vector<float> mFragmentBuf;
   int mCaptureIdx = 0;
   int mLoopReadPos = 0;
+  int mSafetySamplesElapsed = 0;
 
   float mFreezeTimeMs = 200.f;   // side-chain uniquement (temps de maintien)
   int mSidechainHangoverSamples = 0;
 
   float mEventsPerSecond = 0.01f;
   int mGlitchMode = 0;
+  int mSamplesUntilNextTrigger = 0;
   int mInternalSamplesRemaining = 0;
   int mPendingBurstCount = 0;
 };
