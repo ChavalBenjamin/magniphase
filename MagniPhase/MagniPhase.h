@@ -37,6 +37,7 @@ enum EParams
   kParamGlitchFreezeTime,   // 20-10000ms : duree de repetition du fragment capture
   kParamGlitchRate,         // 0-100% : vitesse du declenchement aleatoire (Poisson)
   kParamGlitchMode,         // Poisson / Rafales / Duree variable
+  kParamGlitchEnable,       // Off/On : interrupteur general de toute la section Glitch
   kNumParams
 };
 

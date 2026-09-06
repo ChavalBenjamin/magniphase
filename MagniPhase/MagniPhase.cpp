@@ -18,6 +18,7 @@ MagniPhase::MagniPhase(const InstanceInfo& info)
   GetParam(kParamGlitchFreezeTime)->InitDouble("Freeze", 200., 20., 10000., 1., "ms");
   GetParam(kParamGlitchRate)->InitPercentage("Rate", 0.);
   GetParam(kParamGlitchMode)->InitEnum("Mode", 0, 3, "", IParam::kFlagsNone, "", "Poisson", "Rafales", "Duree Var.");
+  GetParam(kParamGlitchEnable)->InitEnum("Glitch", 0, 2, "", IParam::kFlagsNone, "", "Off", "On");
 
 #if IPLUG_EDITOR
   mMakeGraphicsFunc = [&]() {
@@ -37,24 +38,26 @@ MagniPhase::MagniPhase(const InstanceInfo& info)
     const IRECT bounds = pGraphics->GetBounds();
     IRECT controlsArea = bounds.GetFromTop(bounds.H() * 0.6f).GetPadded(-20.f);
 
-    pGraphics->AttachControl(new IVMenuButtonControl(controlsArea.GetGridCell(0, 0, 5, 3).GetCentredInside(95.f, 32.f), kParamFFTSize, "FFT Size"));
-    pGraphics->AttachControl(new IVMenuButtonControl(controlsArea.GetGridCell(0, 1, 5, 3).GetCentredInside(95.f, 32.f), kParamOverlap, "Overlap"));
-    pGraphics->AttachControl(new IVKnobControl(controlsArea.GetGridCell(0, 2, 5, 3).GetCentredInside(64.f), kParamWindowCycles, "Cycles", knobStyle));
+    pGraphics->AttachControl(new IVMenuButtonControl(controlsArea.GetGridCell(0, 0, 6, 3).GetCentredInside(95.f, 32.f), kParamFFTSize, "FFT Size"));
+    pGraphics->AttachControl(new IVMenuButtonControl(controlsArea.GetGridCell(0, 1, 6, 3).GetCentredInside(95.f, 32.f), kParamOverlap, "Overlap"));
+    pGraphics->AttachControl(new IVKnobControl(controlsArea.GetGridCell(0, 2, 6, 3).GetCentredInside(64.f), kParamWindowCycles, "Cycles", knobStyle));
 
-    pGraphics->AttachControl(new IVKnobControl(controlsArea.GetGridCell(1, 0, 5, 3).GetCentredInside(64.f), kParamWindowPixelLevels, "Pixel", knobStyle));
-    pGraphics->AttachControl(new IVKnobControl(controlsArea.GetGridCell(1, 1, 5, 3).GetCentredInside(64.f), kParamMagMirror, "Mag Mirror", knobStyle));
-    pGraphics->AttachControl(new IVKnobControl(controlsArea.GetGridCell(1, 2, 5, 3).GetCentredInside(64.f), kParamPhaseMirror, "Phase Mirror", knobStyle));
+    pGraphics->AttachControl(new IVKnobControl(controlsArea.GetGridCell(1, 0, 6, 3).GetCentredInside(64.f), kParamWindowPixelLevels, "Pixel", knobStyle));
+    pGraphics->AttachControl(new IVKnobControl(controlsArea.GetGridCell(1, 1, 6, 3).GetCentredInside(64.f), kParamMagMirror, "Mag Mirror", knobStyle));
+    pGraphics->AttachControl(new IVKnobControl(controlsArea.GetGridCell(1, 2, 6, 3).GetCentredInside(64.f), kParamPhaseMirror, "Phase Mirror", knobStyle));
 
-    pGraphics->AttachControl(new IVKnobControl(controlsArea.GetGridCell(2, 0, 5, 3).GetCentredInside(64.f), kParamFreqSwap, "Freq Swap", knobStyle));
-    pGraphics->AttachControl(new IVKnobControl(controlsArea.GetGridCell(2, 1, 5, 3).GetCentredInside(64.f), kParamSwapWindowSize, "Swap Size", knobStyle));
-    pGraphics->AttachControl(new IVKnobControl(controlsArea.GetGridCell(2, 2, 5, 3).GetCentredInside(64.f), kParamSwapWindowPosition, "Swap Pos", knobStyle));
+    pGraphics->AttachControl(new IVKnobControl(controlsArea.GetGridCell(2, 0, 6, 3).GetCentredInside(64.f), kParamFreqSwap, "Freq Swap", knobStyle));
+    pGraphics->AttachControl(new IVKnobControl(controlsArea.GetGridCell(2, 1, 6, 3).GetCentredInside(64.f), kParamSwapWindowSize, "Swap Size", knobStyle));
+    pGraphics->AttachControl(new IVKnobControl(controlsArea.GetGridCell(2, 2, 6, 3).GetCentredInside(64.f), kParamSwapWindowPosition, "Swap Pos", knobStyle));
 
-    pGraphics->AttachControl(new IVMenuButtonControl(controlsArea.GetGridCell(3, 0, 5, 3).GetCentredInside(95.f, 32.f), kParamInvertUpstream, "Invert"));
+    pGraphics->AttachControl(new IVMenuButtonControl(controlsArea.GetGridCell(3, 0, 6, 3).GetCentredInside(95.f, 32.f), kParamInvertUpstream, "Invert"));
 
     // --- Glitch (side-chain) ---
-    pGraphics->AttachControl(new IVKnobControl(controlsArea.GetGridCell(4, 0, 5, 3).GetCentredInside(64.f), kParamGlitchFreezeTime, "Freeze", knobStyle));
-    pGraphics->AttachControl(new IVKnobControl(controlsArea.GetGridCell(4, 1, 5, 3).GetCentredInside(64.f), kParamGlitchRate, "Rate", knobStyle));
-    pGraphics->AttachControl(new IVMenuButtonControl(controlsArea.GetGridCell(4, 2, 5, 3).GetCentredInside(95.f, 32.f), kParamGlitchMode, "Mode"));
+    pGraphics->AttachControl(new IVKnobControl(controlsArea.GetGridCell(4, 0, 6, 3).GetCentredInside(64.f), kParamGlitchFreezeTime, "Freeze", knobStyle));
+    pGraphics->AttachControl(new IVKnobControl(controlsArea.GetGridCell(4, 1, 6, 3).GetCentredInside(64.f), kParamGlitchRate, "Rate", knobStyle));
+    pGraphics->AttachControl(new IVMenuButtonControl(controlsArea.GetGridCell(4, 2, 6, 3).GetCentredInside(95.f, 32.f), kParamGlitchMode, "Mode"));
+
+    pGraphics->AttachControl(new IVMenuButtonControl(controlsArea.GetGridCell(5, 0, 6, 3).GetCentredInside(95.f, 32.f), kParamGlitchEnable, "Glitch"));
 
     // Petite fenetre de visualisation de la forme de fenetre Hann generee.
     IRECT windowViewArea = IRECT(bounds.L, bounds.T + bounds.H() * 0.6f, bounds.R, bounds.B).GetPadded(-20.f);
@@ -103,6 +106,7 @@ void MagniPhase::UpdateEngineParams()
   mGlitchEngine.SetFreezeTime((float)GetParam(kParamGlitchFreezeTime)->Value());
   mGlitchEngine.SetRandomRate((float)(GetParam(kParamGlitchRate)->Value() / 100.0));
   mGlitchEngine.SetGlitchMode((int)GetParam(kParamGlitchMode)->Value());
+  mGlitchEngine.SetEnabled((int)GetParam(kParamGlitchEnable)->Value() != 0);
 }
 
 void MagniPhase::OnReset()
@@ -150,6 +154,9 @@ void MagniPhase::OnParamChange(int paramIdx)
       break;
     case kParamGlitchMode:
       mGlitchEngine.SetGlitchMode((int)GetParam(kParamGlitchMode)->Value());
+      break;
+    case kParamGlitchEnable:
+      mGlitchEngine.SetEnabled((int)GetParam(kParamGlitchEnable)->Value() != 0);
       break;
     default:
       break;
