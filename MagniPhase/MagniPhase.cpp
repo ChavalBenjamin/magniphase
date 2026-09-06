@@ -7,7 +7,8 @@ MagniPhase::MagniPhase(const InstanceInfo& info)
 {
   GetParam(kParamFFTSize)->InitEnum("FFT Size", 1, 3, "", IParam::kFlagsNone, "", "512", "1024", "2048");
   GetParam(kParamOverlap)->InitEnum("Overlap", 0, 2, "", IParam::kFlagsNone, "", "2x", "4x");
-  GetParam(kParamWindowMorph)->InitDouble("Window Morph", 0., 0., (double)(MagniPhaseEngine::kNumWindows - 1), 0.01);
+  GetParam(kParamWindowCycles)->InitDouble("Cycles", 0., 0., 12., 0.01);
+  GetParam(kParamWindowPixelLevels)->InitDouble("Pixel", 64., 2., 64., 0.1);
   GetParam(kParamMagMirror)->InitPercentage("Mag Mirror", 0.);
   GetParam(kParamPhaseMirror)->InitPercentage("Phase Mirror", 0.);
   GetParam(kParamFreqSwap)->InitPercentage("Freq Swap", 0.);
@@ -31,24 +32,42 @@ MagniPhase::MagniPhase(const InstanceInfo& info)
     const IVStyle knobStyle = DEFAULT_STYLE.WithLabelText(IText(10.f, COLOR_WHITE));
 
     const IRECT bounds = pGraphics->GetBounds();
-    IRECT area = bounds.GetPadded(-20.f);
+    IRECT controlsArea = bounds.GetFromTop(bounds.H() * 0.6f).GetPadded(-20.f);
 
-    pGraphics->AttachControl(new IVMenuButtonControl(area.GetGridCell(0, 0, 4, 3).GetCentredInside(95.f, 32.f), kParamFFTSize, "FFT Size"));
-    pGraphics->AttachControl(new IVMenuButtonControl(area.GetGridCell(0, 1, 4, 3).GetCentredInside(95.f, 32.f), kParamOverlap, "Overlap"));
-    pGraphics->AttachControl(new IVKnobControl(area.GetGridCell(0, 2, 4, 3).GetCentredInside(64.f), kParamWindowMorph, "Window Morph", knobStyle));
+    pGraphics->AttachControl(new IVMenuButtonControl(controlsArea.GetGridCell(0, 0, 4, 3).GetCentredInside(95.f, 32.f), kParamFFTSize, "FFT Size"));
+    pGraphics->AttachControl(new IVMenuButtonControl(controlsArea.GetGridCell(0, 1, 4, 3).GetCentredInside(95.f, 32.f), kParamOverlap, "Overlap"));
+    pGraphics->AttachControl(new IVKnobControl(controlsArea.GetGridCell(0, 2, 4, 3).GetCentredInside(64.f), kParamWindowCycles, "Cycles", knobStyle));
 
-    pGraphics->AttachControl(new IVKnobControl(area.GetGridCell(1, 0, 4, 3).GetCentredInside(64.f), kParamMagMirror, "Mag Mirror", knobStyle));
-    pGraphics->AttachControl(new IVKnobControl(area.GetGridCell(1, 1, 4, 3).GetCentredInside(64.f), kParamPhaseMirror, "Phase Mirror", knobStyle));
-    pGraphics->AttachControl(new IVKnobControl(area.GetGridCell(1, 2, 4, 3).GetCentredInside(64.f), kParamFreqSwap, "Freq Swap", knobStyle));
+    pGraphics->AttachControl(new IVKnobControl(controlsArea.GetGridCell(1, 0, 4, 3).GetCentredInside(64.f), kParamWindowPixelLevels, "Pixel", knobStyle));
+    pGraphics->AttachControl(new IVKnobControl(controlsArea.GetGridCell(1, 1, 4, 3).GetCentredInside(64.f), kParamMagMirror, "Mag Mirror", knobStyle));
+    pGraphics->AttachControl(new IVKnobControl(controlsArea.GetGridCell(1, 2, 4, 3).GetCentredInside(64.f), kParamPhaseMirror, "Phase Mirror", knobStyle));
 
-    pGraphics->AttachControl(new IVKnobControl(area.GetGridCell(2, 0, 4, 3).GetCentredInside(64.f), kParamSwapWindowSize, "Swap Size", knobStyle));
-    pGraphics->AttachControl(new IVKnobControl(area.GetGridCell(2, 1, 4, 3).GetCentredInside(64.f), kParamSwapWindowPosition, "Swap Pos", knobStyle));
-    pGraphics->AttachControl(new IVMenuButtonControl(area.GetGridCell(2, 2, 4, 3).GetCentredInside(95.f, 32.f), kParamInvertUpstream, "Invert"));
+    pGraphics->AttachControl(new IVKnobControl(controlsArea.GetGridCell(2, 0, 4, 3).GetCentredInside(64.f), kParamFreqSwap, "Freq Swap", knobStyle));
+    pGraphics->AttachControl(new IVKnobControl(controlsArea.GetGridCell(2, 1, 4, 3).GetCentredInside(64.f), kParamSwapWindowSize, "Swap Size", knobStyle));
+    pGraphics->AttachControl(new IVKnobControl(controlsArea.GetGridCell(2, 2, 4, 3).GetCentredInside(64.f), kParamSwapWindowPosition, "Swap Pos", knobStyle));
+
+    pGraphics->AttachControl(new IVMenuButtonControl(controlsArea.GetGridCell(3, 0, 4, 3).GetCentredInside(95.f, 32.f), kParamInvertUpstream, "Invert"));
+
+    // Petite fenetre de visualisation de la forme de fenetre Hann generee.
+    IRECT windowViewArea = IRECT(bounds.L, bounds.T + bounds.H() * 0.6f, bounds.R, bounds.B).GetPadded(-20.f);
+    mWindowView = new WindowPreviewControl(windowViewArea);
+    pGraphics->AttachControl(mWindowView);
   };
 #endif
 
 #if IPLUG_DSP
   OnReset();
+#endif
+}
+
+void MagniPhase::OnIdle()
+{
+#if IPLUG_DSP
+  if (mWindowView && mEngine.WindowUIUpdated())
+  {
+    mWindowView->SetWaveform(mEngine.GetWindowForUI(), mEngine.GetWindowSizeForUI());
+    mWindowView->SetDirty(false);
+  }
 #endif
 }
 
@@ -63,7 +82,8 @@ void MagniPhase::UpdateEngineParams()
   int overlap = (overlapIdx == 0) ? 2 : 4;
 
   mEngine.Init(fftSize, overlap);
-  mEngine.SetWindowMorph((float)GetParam(kParamWindowMorph)->Value());
+  mEngine.SetWindowCycles((float)GetParam(kParamWindowCycles)->Value());
+  mEngine.SetWindowPixelLevels((float)GetParam(kParamWindowPixelLevels)->Value());
   mEngine.SetMagMirror((float)(GetParam(kParamMagMirror)->Value() / 100.0));
   mEngine.SetPhaseMirror((float)(GetParam(kParamPhaseMirror)->Value() / 100.0));
   mEngine.SetFreqSwap((float)(GetParam(kParamFreqSwap)->Value() / 100.0));
@@ -85,8 +105,11 @@ void MagniPhase::OnParamChange(int paramIdx)
     case kParamOverlap:
       UpdateEngineParams(); // reinitialise le moteur (taille FFT/overlap changes)
       break;
-    case kParamWindowMorph:
-      mEngine.SetWindowMorph((float)GetParam(kParamWindowMorph)->Value());
+    case kParamWindowCycles:
+      mEngine.SetWindowCycles((float)GetParam(kParamWindowCycles)->Value());
+      break;
+    case kParamWindowPixelLevels:
+      mEngine.SetWindowPixelLevels((float)GetParam(kParamWindowPixelLevels)->Value());
       break;
     case kParamMagMirror:
       mEngine.SetMagMirror((float)(GetParam(kParamMagMirror)->Value() / 100.0));

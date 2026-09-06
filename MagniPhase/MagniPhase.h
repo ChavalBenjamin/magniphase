@@ -2,7 +2,9 @@
 
 #include "IPlug_include_in_plug_hdr.h"
 #include "MagniPhaseEngine.h"
+#include "WindowPreviewControl.h"
 #include <vector>
+#include <atomic>
 
 // ============================================================================
 // Config attendue dans MagniPhase/config.h :
@@ -17,7 +19,8 @@ enum EParams
 {
   kParamFFTSize = 0,
   kParamOverlap,
-  kParamWindowMorph, // position dans la banque de fenetres (Tukey -> lobes -> complexe)
+  kParamWindowCycles,      // nombre de cycles de l'oscillateur generant la fenetre
+  kParamWindowPixelLevels, // resolution de quantification (bas = anguleux, haut = lisse)
   kParamMagMirror,   // 0 = normal, 0.5 = tout egal, 1 = miroir complet (magnitude)
   kParamPhaseMirror, // idem, pour la phase
   kParamFreqSwap,    // 0 = normal, 1 = grave/aigu completement echanges (phase inchangee)
@@ -35,6 +38,9 @@ class MagniPhase final : public iplug::Plugin
 public:
   MagniPhase(const InstanceInfo& info);
 
+  void OnIdle() override;
+  void OnUIClose() override { mWindowView = nullptr; }
+
 #if IPLUG_DSP
   void ProcessBlock(sample** inputs, sample** outputs, int nFrames) override;
   void OnParamChange(int paramIdx) override;
@@ -42,6 +48,8 @@ public:
 #endif
 
 private:
+  WindowPreviewControl* mWindowView = nullptr;
+
 #if IPLUG_DSP
   void UpdateEngineParams();
 

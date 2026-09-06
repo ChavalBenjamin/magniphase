@@ -27,11 +27,6 @@ class MagniPhaseEngine
 public:
   using cplx = std::complex<float>;
 
-  static constexpr int kNumWindows = 24;
-  static constexpr int kZone1Count = 8;  // Tukey : douce -> quasi-rectangulaire
-  static constexpr int kZone2Count = 8;  // lobes multiples, nombre croissant
-  static constexpr int kZone3Count = kNumWindows - kZone1Count - kZone2Count; // formes complexes/asymetriques
-
   MagniPhaseEngine() { Init(1024, 2); }
 
   void Init(int fftSize, int overlapFactor)
@@ -47,21 +42,41 @@ public:
     mMagBuf.assign(mFFTSize, 0.f);
     mMagBuf2.assign(mFFTSize, 0.f);
     mPhaseBuf.assign(mFFTSize, 0.f);
+    mCurrentWindow.assign(mFFTSize, 0.f);
+    mWindowUIBuf.assign(mFFTSize, 0.f);
 
-    BuildWindowBank();
+    mWindowDirty = true;
+    RebuildWindowIfNeeded();
 
     mWritePos = 0;
     mReadPos = 0;
     mSamplesUntilHop = mHopSize;
   }
 
-  // Position de morph dans la banque de fenetres : 0 = la plus douce
-  // (quasi-Hann), kNumWindows-1 = la plus extreme (quasi-rectangulaire).
-  // Continue : entre deux entiers, melange lineaire des deux voisines.
-  void SetWindowMorph(float morphPos)
+  // Fenetre generee en direct a partir de 2 parametres, comme dans le
+  // patch Pure Data de reference :
+  //  - Cycles : nombre d'oscillations a travers la fenetre
+  //  - Pixel  : resolution de quantification (bas = anguleux/triangulaire,
+  //    haut = lisse) - applique un effet d'escalier sur la courbe brute
+  //    avant de l'envelopper (garantit toujours 0 aux deux bouts).
+  void SetWindowCycles(float cycles)
   {
-    mWindowMorph = std::clamp(morphPos, 0.f, (float)(kNumWindows - 1));
+    cycles = std::max(0.f, cycles);
+    if (cycles != mWindowCycles) { mWindowCycles = cycles; mWindowDirty = true; }
   }
+
+  void SetWindowPixelLevels(float levels)
+  {
+    levels = std::max(2.f, levels);
+    if (levels != mWindowPixelLevels) { mWindowPixelLevels = levels; mWindowDirty = true; }
+  }
+
+  // Pour l'affichage (WindowPreviewControl) : derniere fenetre generee,
+  // copiee cote thread audio a chaque reconstruction (voir OnIdle cote
+  // plugin pour la lecture cote interface).
+  const float* GetWindowForUI() const { return mWindowUIBuf.data(); }
+  int GetWindowSizeForUI() const { return mFFTSize; }
+  bool WindowUIUpdated() { bool u = mWindowUIUpdated; mWindowUIUpdated = false; return u; }
 
   // Position du melange normal <-> miroir, 0..1, independant pour
   // magnitude et phase.
@@ -114,107 +129,29 @@ public:
   }
 
 private:
-  void BuildWindowBank()
+  // Reconstruit la fenetre si Cycles/Pixel ont change depuis la derniere
+  // fois. Principe (identique au patch PD de reference) : un oscillateur
+  // multi-lobes (nombre de cycles reglable), enveloppe pour garantir 0 aux
+  // deux bouts, puis quantifie (nombre de paliers regle par Pixel) pour
+  // obtenir l'effet "pixelise"/anguleux/triangulaire a basse resolution.
+  void RebuildWindowIfNeeded()
   {
-    mWindowBank.assign(kNumWindows, std::vector<float>(mFFTSize));
+    if (!mWindowDirty) return;
+    mWindowDirty = false;
 
-    // --- Zone 1 : Tukey, douce -> quasi-rectangulaire. Distribution en
-    // racine carree (plutot que lineaire) : le durcissement de la pente
-    // arrive plus vite en tournant le bouton, au lieu d'etre etale sur
-    // toute la premiere moitie de sa course.
-    for (int w = 0; w < kZone1Count; w++)
-    {
-      float t = (kZone1Count > 1) ? (float)w / (float)(kZone1Count - 1) : 0.f;
-      float taper = 1.0f - std::sqrt(t) * (1.0f - 0.02f);
-      BuildTukeyWindow(mWindowBank[w], taper);
-    }
-
-    // --- Zone 2 : nombre de lobes croissant. Toujours strictement nul aux
-    // deux extremites (enveloppe en sin(pi*x)) pour eviter tout clic au
-    // raccord des blocs, meme quand le nombre de cycles n'est pas entier
-    // (position intermediaire pendant un morph).
-    for (int w = 0; w < kZone2Count; w++)
-    {
-      float t = (kZone2Count > 1) ? (float)w / (float)(kZone2Count - 1) : 0.f;
-      float cycles = t * 9.f; // jusqu'a ~9 lobes supplementaires
-      BuildLobedWindow(mWindowBank[kZone1Count + w], cycles);
-    }
-
-    // --- Zone 3 : formes complexes et asymetriques (plusieurs frequences
-    // non-entieres, dephasages fixes) - complexite croissante.
-    for (int w = 0; w < kZone3Count; w++)
-    {
-      float t = (kZone3Count > 1) ? (float)w / (float)(kZone3Count - 1) : 0.f;
-      BuildComplexWindow(mWindowBank[kZone1Count + kZone2Count + w], t);
-    }
-  }
-
-  void BuildLobedWindow(std::vector<float>& dst, float cycles)
-  {
     int N = mFFTSize;
     for (int i = 0; i < N; i++)
     {
       float x = (float)i / (float)(N - 1);
-      float envelope = std::sin(kPi * x); // garantit 0 aux deux bouts, toujours
-      float raw = std::abs(std::sin(kPi * (cycles + 1.f) * x));
-      dst[i] = envelope * raw;
-    }
-  }
-
-  void BuildComplexWindow(std::vector<float>& dst, float complexity)
-  {
-    int N = mFFTSize;
-    int numHarmonics = 2 + (int)(complexity * 4.f); // de 2 a 6 composantes
-
-    for (int i = 0; i < N; i++)
-    {
-      float x = (float)i / (float)(N - 1);
+      float raw = std::abs(std::sin(kPi * (mWindowCycles + 1.f) * x));
+      float quantized = std::round(raw * mWindowPixelLevels) / mWindowPixelLevels;
       float envelope = std::sin(kPi * x); // garantit 0 aux deux bouts
-
-      float sum = 0.f, wsum = 0.f;
-      for (int h = 0; h < numHarmonics; h++)
-      {
-        // Frequences non-entieres et dephasages fixes croissants : casse
-        // volontairement la symetrie, forme non-periodique/organique.
-        float freq = 1.3f + (float)h * 1.7f;
-        float phase = (float)h * 0.9f;
-        float amp = 1.f / (float)(h + 1);
-        sum += amp * std::sin(2.f * kPi * freq * x + phase);
-        wsum += amp;
-      }
-      sum /= wsum; // ramene approximativement a -1..1
-
-      dst[i] = envelope * (0.5f + 0.5f * sum * complexity);
+      mCurrentWindow[i] = envelope * quantized;
     }
-  }
 
-  void BuildTukeyWindow(std::vector<float>& dst, float taper)
-  {
-    int N = mFFTSize;
-    for (int i = 0; i < N; i++)
-    {
-      float x = (float)i / (float)(N - 1);
-      float w;
-
-      if (x < taper * 0.5f)
-        w = 0.5f * (1.f + std::cos(kPi * (2.f * x / taper - 1.f)));
-      else if (x <= 1.f - taper * 0.5f)
-        w = 1.f;
-      else
-        w = 0.5f * (1.f + std::cos(kPi * (2.f * x / taper - 2.f / taper + 1.f)));
-
-      dst[i] = w;
-    }
-  }
-
-  // Echantillon de la fenetre courante (position i), obtenu par melange
-  // lineaire entre les deux entrees voisines de la banque selon mWindowMorph.
-  float GetWindowSample(int i) const
-  {
-    int i0 = (int)mWindowMorph;
-    int i1 = std::min(i0 + 1, kNumWindows - 1);
-    float frac = mWindowMorph - (float)i0;
-    return mWindowBank[i0][i] * (1.f - frac) + mWindowBank[i1][i] * frac;
+    // Copie pour l'affichage (thread interface, lu via GetWindowForUI()).
+    mWindowUIBuf = mCurrentWindow;
+    mWindowUIUpdated = true;
   }
 
   void ReadRingIntoLinear(const std::vector<float>& ring, std::vector<float>& dst)
@@ -263,10 +200,12 @@ private:
 
   void ProcessHop()
   {
+    RebuildWindowIfNeeded();
+
     ReadRingIntoLinear(mRingIn, mTimeBuf);
 
     for (int i = 0; i < mFFTSize; i++)
-      mCplxBuf[i] = cplx(mTimeBuf[i] * GetWindowSample(i), 0.f);
+      mCplxBuf[i] = cplx(mTimeBuf[i] * mCurrentWindow[i], 0.f);
 
     FFT(mCplxBuf, false);
 
@@ -367,7 +306,7 @@ private:
     for (int i = 0; i < mFFTSize; i++)
     {
       int idx = (start + i) % mFFTSize;
-      mRingOut[idx] += mCplxBuf[i].real() * GetWindowSample(i) * normOverlap;
+      mRingOut[idx] += mCplxBuf[i].real() * mCurrentWindow[i] * normOverlap;
     }
   }
 
@@ -398,8 +337,12 @@ private:
   int mWritePos = 0;
   int mReadPos = 0;
 
-  float mWindowMorph = 0.f;
-  std::vector<std::vector<float>> mWindowBank;
+  float mWindowCycles = 0.f;
+  float mWindowPixelLevels = 64.f;
+  bool mWindowDirty = true;
+  std::vector<float> mCurrentWindow;
+  std::vector<float> mWindowUIBuf;
+  bool mWindowUIUpdated = false;
 
   std::vector<float> mRingIn, mRingOut;
   std::vector<float> mTimeBuf;
