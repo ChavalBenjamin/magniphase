@@ -20,11 +20,19 @@ public:
   {
   }
 
+  // Reechantillonne proportionnellement pour tenir dans kMaxPoints -
+  // JAMAIS une simple troncature (qui ne montrerait que le debut de la
+  // fenetre pour toute taille FFT superieure a kMaxPoints, coupant la fin
+  // et donnant une impression de cycles incomplets).
   void SetWaveform(const float* buf, int size)
   {
     mSize = std::min(size, kMaxPoints);
     for (int i = 0; i < mSize; i++)
-      mBuffer[i] = buf[i];
+    {
+      int srcIdx = (int)((float)i / (float)mSize * (float)size);
+      srcIdx = std::min(srcIdx, size - 1);
+      mBuffer[i] = buf[srcIdx];
+    }
   }
 
   void Draw(iplug::igraphics::IGraphics& g) override
