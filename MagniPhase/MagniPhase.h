@@ -13,13 +13,13 @@
 //   #define PLUG_TYPE 0              // Effet (pas un instrument)
 //   #define PLUG_DOES_MIDI_IN 0
 //   #define PLUG_DOES_MIDI_OUT 0
-//   #define PLUG_CHANNEL_IO "1.1-1"  // NOTE INCERTAINE : 2 bus d'entree
-//                                    // (principal + side-chain, 1 canal
-//                                    // chacun), 1 bus de sortie (1 canal).
-//                                    // Premiere fois qu'on utilise un
-//                                    // side-chain dans ce projet - syntaxe
-//                                    // exacte a verifier/ajuster selon le
-//                                    // resultat de compilation.
+//   #define PLUG_CHANNEL_IO "2-2 2.1-2"  // NOTE INCERTAINE : stereo (2-2)
+//                                        // en repli, ou stereo + Aux mono
+//                                        // dedie au declenchement du
+//                                        // glitch (2.1-2) si l'hote le
+//                                        // supporte. Syntaxe a
+//                                        // verifier/ajuster selon le
+//                                        // resultat de compilation.
 // ============================================================================
 
 enum EParams
@@ -27,15 +27,15 @@ enum EParams
   kParamFFTSize = 0,
   kParamOverlap,
   kParamWindowCycles,      // nombre de cycles de l'oscillateur generant la fenetre
-  kParamWindowPixelLevels, // resolution de quantification (bas = anguleux, haut = lisse)
+  kParamWindowPixelLevels, // 0-100% : quantite de "pixelisation" (0 = sinus parfait)
   kParamMagMirror,   // 0 = normal, 0.5 = tout egal, 1 = miroir complet (magnitude)
   kParamPhaseMirror, // idem, pour la phase
   kParamFreqSwap,    // 0 = normal, 1 = grave/aigu completement echanges (phase inchangee)
   kParamSwapWindowSize,     // 0-1 : largeur de la zone concernee par Freq Swap (1 = tout le spectre)
   kParamSwapWindowPosition, // 0-1 : position de cette zone dans le spectre (deforme, voir moteur)
   kParamInvertUpstream,     // Off/On : inversion complete magnitude+phase, en amont de tout le reste
-  kParamGlitchFreezeTime,   // 20-10000ms : duree de repetition du fragment capture
-  kParamGlitchRate,         // 0-100% : vitesse du declenchement aleatoire (Poisson)
+  kParamGlitchFreezeTime,   // 20-10000ms : temps de maintien du glitch declenche par l'Aux
+  kParamGlitchRate,         // 0-100% : frequence du declenchement interne (jamais -> tres souvent)
   kParamGlitchMode,         // Poisson / Rafales / Duree variable
   kParamGlitchEnable,       // Off/On : interrupteur general de toute la section Glitch
   kNumParams
@@ -64,8 +64,18 @@ private:
 #if IPLUG_DSP
   void UpdateEngineParams();
 
-  MagniPhaseEngine mEngine;
+  // Deux instances independantes du moteur spectral (une par canal),
+  // partageant les memes parametres mais chacune avec son propre etat
+  // d'analyse/resynthese - vrai traitement stereo, pas un simple
+  // dedoublement du mono.
+  MagniPhaseEngine mEngineL, mEngineR;
+
+  // Le glitch gere lui-meme les deux canaux ensemble (image stereo
+  // coherente : meme instant capture/bouclé sur L et R).
   GlitchEngine mGlitchEngine;
-  std::vector<float> mInBuf, mOutBuf, mSidechainBuf, mGlitchOutBuf;
+
+  std::vector<float> mInBufL, mInBufR, mOutBufL, mOutBufR;
+  std::vector<float> mSidechainBuf;
+  std::vector<float> mGlitchOutBufL, mGlitchOutBufR;
 #endif
 };

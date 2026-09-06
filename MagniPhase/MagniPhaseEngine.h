@@ -1,379 +1,299 @@
 #pragma once
 
 #include <vector>
-#include <complex>
 #include <cmath>
+#include <cstdlib>
 #include <algorithm>
 
 // ============================================================================
-// MagniPhaseEngine
+// GlitchEngine (stereo)
 //
-// Moteur STFT auto-contenu (meme principe que StftCrossSynth de Magnitude1) :
-// FFT maison, ring buffer, chevauchement-addition (overlap-add). Etape 1 :
-// extrait magnitude/phase de chaque bande, reconstruit A L'IDENTIQUE (aucune
-// modification) - valide le pipeline avant d'ajouter des operations.
+// Reproduit l'artefact classique de dissimulation de perte de paquets
+// (VoIP/WhatsApp) : capture un tres court fragment stereo du signal ("la
+// photo", duree fixe, LES DEUX CANAUX ENSEMBLE pour garder une image
+// stereo coherente), puis le boucle avant de relacher.
 //
-// Particularite : au lieu d'une fenetre de Hann fixe, une BANQUE de 10
-// fenetres de Tukey (du plus doux, ~Hann, au quasi-rectangulaire a pente
-// tres raide) est utilisee, avec un morphing continu entre elles. Note :
-// les tapers extremes (proches du rectangulaire) ne respectent plus
-// parfaitement la propriete de recouvrement constant (COLA) qu'a Hann -
-// c'est volontaire ici (recherche d'un caractere "derangeant"/distordu),
-// pas une erreur a corriger.
+// DEUX sources de declenchement INDEPENDANTES :
+//
+//  - SIDE-CHAIN (Aux, mono) : une vraie enveloppe qui ne fait RIEN sans
+//    signal recu. Le glitch reste actif tant que l'Aux est present, puis
+//    continue "Freeze Time" ms de plus (temps de maintien) avant de
+//    relacher et reprendre le cours normal - exactement comme une "photo"
+//    qui capture puis relache.
+//
+//  - DECLENCHEMENT INTERNE : Rate regle la frequence moyenne (de "jamais"
+//    a "tres souvent", echelle logarithmique pour une sensation naturelle
+//    sur tout le parcours du bouton), le Mode regle le CARACTERE de
+//    chaque evenement - pense pour rester chaotique et imprevisible meme
+//    une fois le mecanisme connu (seul l'Aux reste un declenchement
+//    volontaire/previsible) :
+//
+//    0 = Poisson       : declenchements isoles, aucune structure, aucune
+//                        memoire du passe.
+//    1 = Rafales       : chaque declenchement a une chance ALEATOIRE de
+//                        se transformer en rafale (nombre ET espacement
+//                        entre les coups tous aleatoires) - jamais deux
+//                        rafales identiques.
+//    2 = Duree Variable: chaque evenement dure une duree tiree sur une
+//                        PLAGE LARGE (d'un accroc tres bref a un
+//                        decrochage nettement plus long), sans previsibilite.
+//
+// Un interrupteur general (SetEnabled) desactive tout le module d'un coup.
+// Un filet de securite force un retour a la normale si un glitch dure
+// anormalement longtemps, quelle qu'en soit la cause.
 // ============================================================================
 
-class MagniPhaseEngine
+class GlitchEngine
 {
 public:
-  using cplx = std::complex<float>;
+  enum class Mode { Poisson = 0, Rafales = 1, DureeVariable = 2 };
 
-  MagniPhaseEngine() { Init(1024, 2); }
-
-  void Init(int fftSize, int overlapFactor)
+  void Init(double sampleRate)
   {
-    mFFTSize = fftSize;
-    mOverlap = overlapFactor;
-    mHopSize = mFFTSize / mOverlap;
-
-    mRingIn.assign(mFFTSize, 0.f);
-    mRingOut.assign(mFFTSize, 0.f);
-    mTimeBuf.resize(mFFTSize);
-    mCplxBuf.assign(mFFTSize, cplx(0.f, 0.f));
-    mMagBuf.assign(mFFTSize, 0.f);
-    mMagBuf2.assign(mFFTSize, 0.f);
-    mPhaseBuf.assign(mFFTSize, 0.f);
-    mCurrentWindow.assign(mFFTSize, 0.f);
-    mWindowUIBuf.assign(mFFTSize, 0.f);
-
-    mWindowDirty = true;
-    RebuildWindowIfNeeded();
-
-    mWritePos = 0;
-    mReadPos = 0;
-    mSamplesUntilHop = mHopSize;
+    mSampleRate = sampleRate;
+    mFragmentSamples = std::max(4, (int)(kFragmentMs * 0.001 * sampleRate));
+    mFragmentBufL.assign(mFragmentSamples, 0.f);
+    mFragmentBufR.assign(mFragmentSamples, 0.f);
+    mState = State::Idle;
+    mTriggerSource = Source::None;
+    mPendingBurstCount = 0;
+    mBurstGapRemaining = 0;
+    mSidechainHangoverSamples = 0;
+    mSafetySamplesElapsed = 0;
+    ScheduleNextInternalTrigger();
   }
 
-  // Fenetre generee en direct a partir de 2 parametres, comme dans le
-  // patch Pure Data de reference :
-  //  - Cycles : nombre d'oscillations a travers la fenetre
-  //  - Pixel  : resolution de quantification (bas = anguleux/triangulaire,
-  //    haut = lisse) - applique un effet d'escalier sur la courbe brute
-  //    avant de l'envelopper (garantit toujours 0 aux deux bouts).
-  //
-  // Cycles est mis a l'echelle par rapport a la taille FFT (reference :
-  // 1024) : une meme valeur de Cycles couvre alors une duree reelle
-  // comparable, quelle que soit la taille FFT choisie - sans ca, une
-  // fenetre plus grande "etale" les memes cycles sur plus de temps reel,
-  // changeant le caractere du son pour un meme reglage de bouton.
-  void SetWindowCycles(float cycles)
+  void SetEnabled(bool enabled) { mEnabled = enabled; }
+
+  // Temps de maintien (ms) APRES la disparition du signal Aux, avant de
+  // relacher. Ne concerne QUE le side-chain.
+  void SetFreezeTime(float ms) { mFreezeTimeMs = std::clamp(ms, 20.f, 10000.f); }
+
+  // Vitesse du declenchement interne, 0 (jamais) a 1 (tres souvent).
+  // Echelle logarithmique : ~0.01 evenement/s au minimum utile jusqu'a
+  // ~10 evenements/s au maximum, pour une sensation naturelle sur tout
+  // le parcours du bouton plutot qu'une plage trop etroite.
+  void SetRandomRate(float rate01)
   {
-    cycles = std::max(1.f, cycles);
-    if (cycles != mWindowCyclesBase) { mWindowCyclesBase = cycles; mWindowDirty = true; }
+    rate01 = std::clamp(rate01, 0.f, 1.f);
+    mEventsPerSecond = (rate01 <= 0.001f) ? 0.f : std::pow(10.f, -2.f + rate01 * 3.f);
   }
 
-  // Quantite de "pixelisation" (0 = aucune, sinus parfait ; 1 = tres
-  // anguleux/triangulaire). A 0 exactement, la quantification est
-  // completement court-circuitee : garantit un sinus mathematiquement
-  // parfait, pas juste une approximation tres fine.
-  void SetWindowPixelAmount(float amount01)
-  {
-    amount01 = std::clamp(amount01, 0.f, 1.f);
-    if (amount01 != mWindowPixelAmount) { mWindowPixelAmount = amount01; mWindowDirty = true; }
-  }
+  void SetGlitchMode(int mode) { mGlitchMode = std::clamp(mode, 0, 2); }
 
-  // Pour l'affichage (WindowPreviewControl) : derniere fenetre generee,
-  // copiee cote thread audio a chaque reconstruction (voir OnIdle cote
-  // plugin pour la lecture cote interface).
-  const float* GetWindowForUI() const { return mWindowUIBuf.data(); }
-  int GetWindowSizeForUI() const { return mFFTSize; }
-  bool WindowUIUpdated() { bool u = mWindowUIUpdated; mWindowUIUpdated = false; return u; }
-
-  // Position du melange normal <-> miroir, 0..1, independant pour
-  // magnitude et phase.
-  void SetMagMirror(float t) { mMagMirror = std::clamp(t, 0.f, 1.f); }
-  void SetPhaseMirror(float t) { mPhaseMirror = std::clamp(t, 0.f, 1.f); }
-  void SetFreqSwap(float t) { mFreqSwap = std::clamp(t, 0.f, 1.f); }
-  void SetSwapWindowSize(float size) { mSwapWindowSize = std::clamp(size, 0.f, 1.f); }
-
-  // Position de la fenetre de Freq Swap, avec deformation non-lineaire :
-  // les 50% premiers du parcours du bouton couvrent les 15% premiers de
-  // la valeur reelle (zone la plus sensible/utile, dilatee pour plus de
-  // precision), le reste suit une courbe exponentielle. rawT = position
-  // brute du bouton (0-1, linaire, ce que le parametre iPlug2 envoie).
-  void SetSwapWindowPosition(float rawT)
-  {
-    rawT = std::clamp(rawT, 0.f, 1.f);
-    constexpr float kSplitKnob = 0.5f;   // 50% du bouton...
-    constexpr float kSplitValue = 0.15f; // ...= 15% premiers de la valeur
-    constexpr float kExpPower = 2.5f;    // durete de la courbe sur le reste
-
-    if (rawT <= kSplitKnob)
-      mSwapWindowPosition = (rawT / kSplitKnob) * kSplitValue;
-    else
-    {
-      float s = (rawT - kSplitKnob) / (1.f - kSplitKnob);
-      mSwapWindowPosition = kSplitValue + (1.f - kSplitValue) * std::pow(s, kExpPower);
-    }
-  }
-
-  void SetInvertUpstream(bool invert) { mInvertUpstream = invert; }
-
-  void Process(const float* in, float* out, int nFrames)
+  // inL/inR = signal a traiter (stereo), sidechain = signal Aux mono de
+  // declenchement (peut etre nullptr si non disponible), outL/outR = sortie.
+  void Process(const float* inL, const float* inR, const float* sidechain,
+               float* outL, float* outR, int nFrames)
   {
     for (int i = 0; i < nFrames; i++)
     {
-      mRingIn[mWritePos] = in[i];
-
-      out[i] = mRingOut[mReadPos];
-      mRingOut[mReadPos] = 0.f;
-
-      mWritePos = (mWritePos + 1) % mFFTSize;
-      mReadPos = (mReadPos + 1) % mFFTSize;
-
-      if (--mSamplesUntilHop == 0)
+      if (!mEnabled)
       {
-        mSamplesUntilHop = mHopSize;
-        ProcessHop();
+        outL[i] = inL[i];
+        outR[i] = inR[i];
+        continue;
+      }
+
+      // --- Side-chain (Aux) : vraie enveloppe, ne fait rien sans signal ---
+      bool sidechainActive = sidechain && std::abs(sidechain[i]) > kSidechainThreshold;
+
+      if (sidechainActive)
+      {
+        if (mState == State::Idle)
+          TriggerGlitch(Source::Sidechain);
+        mSidechainHangoverSamples = (int)(mFreezeTimeMs * 0.001 * mSampleRate);
+      }
+      else if (mTriggerSource == Source::Sidechain && mState != State::Idle)
+      {
+        if (mSidechainHangoverSamples > 0)
+          mSidechainHangoverSamples--;
+        else
+          mState = State::Idle; // signal disparu + temps de maintien ecoule
+      }
+
+      // --- Declenchement interne, independant, seulement si rien d'actif ---
+      if (mState == State::Idle)
+      {
+        if (mBurstGapRemaining > 0)
+        {
+          mBurstGapRemaining--;
+          if (mBurstGapRemaining <= 0 && mPendingBurstCount > 0)
+          {
+            mPendingBurstCount--;
+            TriggerGlitch(Source::Internal);
+            mInternalSamplesRemaining = ComputeInternalDurationSamples();
+          }
+        }
+        else if (mEventsPerSecond > 0.f)
+        {
+          mSamplesUntilNextTrigger--;
+          if (mSamplesUntilNextTrigger <= 0)
+          {
+            TriggerGlitch(Source::Internal);
+            mInternalSamplesRemaining = ComputeInternalDurationSamples();
+            MaybeScheduleBurst();
+            ScheduleNextInternalTrigger();
+          }
+        }
+      }
+
+      // --- Filet de securite : force un retour a la normale si un glitch
+      // (quelle qu'en soit la source) dure anormalement longtemps.
+      if (mState != State::Idle)
+      {
+        mSafetySamplesElapsed++;
+        if (mSafetySamplesElapsed > kMaxGlitchSamples)
+        {
+          mState = State::Idle;
+          mSafetySamplesElapsed = 0;
+        }
+      }
+      else
+      {
+        mSafetySamplesElapsed = 0;
+      }
+
+      float sL = inL[i], sR = inR[i];
+
+      switch (mState)
+      {
+        case State::Idle:
+          outL[i] = sL;
+          outR[i] = sR;
+          break;
+
+        case State::Capturing:
+          mFragmentBufL[mCaptureIdx] = sL;
+          mFragmentBufR[mCaptureIdx] = sR;
+          outL[i] = sL; // passthrough pendant la capture (tres brieve)
+          outR[i] = sR;
+          mCaptureIdx++;
+          if (mCaptureIdx >= mFragmentSamples)
+          {
+            SmoothLoopSeam(mFragmentBufL);
+            SmoothLoopSeam(mFragmentBufR);
+            mCaptureIdx = 0;
+            mState = State::Looping;
+            mLoopReadPos = 0;
+          }
+          break;
+
+        case State::Looping:
+          outL[i] = mFragmentBufL[mLoopReadPos];
+          outR[i] = mFragmentBufR[mLoopReadPos];
+          mLoopReadPos = (mLoopReadPos + 1) % mFragmentSamples;
+
+          // La sortie de boucle du side-chain est geree plus haut
+          // (enveloppe). Ici, seule la duree INTERNE est decomptee.
+          if (mTriggerSource == Source::Internal)
+          {
+            mInternalSamplesRemaining--;
+            if (mInternalSamplesRemaining <= 0)
+            {
+              mState = State::Idle;
+              if (mPendingBurstCount > 0)
+                mBurstGapRemaining = RandomBurstGapSamples();
+            }
+          }
+          break;
       }
     }
   }
 
 private:
-  // Reconstruit la fenetre si Cycles/Pixel ont change depuis la derniere
-  // fois. Principe (identique au patch PD de reference) : un oscillateur
-  // multi-lobes (nombre de cycles reglable), enveloppe pour garantir 0 aux
-  // deux bouts, puis quantifie (nombre de paliers regle par Pixel) pour
-  // obtenir l'effet "pixelise"/anguleux/triangulaire a basse resolution.
-  void RebuildWindowIfNeeded()
+  enum class State { Idle, Capturing, Looping };
+  enum class Source { None, Sidechain, Internal };
+
+  void TriggerGlitch(Source source)
   {
-    if (!mWindowDirty) return;
-    mWindowDirty = false;
-
-    // Cycles mis a l'echelle par rapport a la taille FFT (reference 1024).
-    float effectiveCycles = mWindowCyclesBase * ((float)mFFTSize / 1024.f);
-
-    // Pixel : 0 = sinus parfait (pas de quantification), 1 = tres
-    // anguleux (2 paliers seulement).
-    float levels = 256.f - mWindowPixelAmount * (256.f - 2.f);
-
-    int N = mFFTSize;
-    for (int i = 0; i < N; i++)
-    {
-      float x = (float)i / (float)(N - 1);
-      float raw = std::abs(std::sin(kPi * effectiveCycles * x));
-
-      float quantized = (mWindowPixelAmount <= 0.0001f)
-        ? raw // court-circuite la quantification : sinus mathematiquement parfait
-        : std::round(raw * levels) / levels;
-
-      float envelope = std::sin(kPi * x); // garantit 0 aux deux bouts
-      mCurrentWindow[i] = envelope * quantized;
-    }
-
-    // Copie pour l'affichage (thread interface, lu via GetWindowForUI()).
-    mWindowUIBuf = mCurrentWindow;
-    mWindowUIUpdated = true;
+    mState = State::Capturing;
+    mCaptureIdx = 0;
+    mTriggerSource = source;
+    mSafetySamplesElapsed = 0;
   }
 
-  void ReadRingIntoLinear(const std::vector<float>& ring, std::vector<float>& dst)
+  // Calcule le delai jusqu'au prochain declenchement interne via une loi
+  // exponentielle (methode standard pour simuler un vrai processus de
+  // Poisson) - robuste numeriquement.
+  void ScheduleNextInternalTrigger()
   {
-    int start = mWritePos;
-    for (int i = 0; i < mFFTSize; i++)
-      dst[i] = ring[(start + i) % mFFTSize];
+    if (mEventsPerSecond <= 0.f) { mSamplesUntilNextTrigger = 0x7fffffff; return; }
+    float u = std::max(1e-6f, (float)std::rand() / (float)RAND_MAX);
+    float intervalSec = -std::log(u) / mEventsPerSecond;
+    mSamplesUntilNextTrigger = (int)(intervalSec * mSampleRate);
   }
 
-  static void FFT(std::vector<cplx>& a, bool invert)
+  // Mode Rafales : chance ALEATOIRE (pas systematique) que ce
+  // declenchement devienne une rafale, avec un nombre de coups
+  // supplementaires lui aussi aleatoire. L'espacement entre les coups
+  // (RandomBurstGapSamples) est egalement variable a chaque fois.
+  void MaybeScheduleBurst()
   {
-    int n = (int)a.size();
-    for (int i = 1, j = 0; i < n; i++)
-    {
-      int bit = n >> 1;
-      for (; j & bit; bit >>= 1)
-        j ^= bit;
-      j ^= bit;
-      if (i < j) std::swap(a[i], a[j]);
-    }
+    mPendingBurstCount = 0;
+    if (mGlitchMode != (int)Mode::Rafales) return;
 
-    for (int len = 2; len <= n; len <<= 1)
-    {
-      float ang = 2.f * kPi / (float)len * (invert ? 1.f : -1.f);
-      cplx wlen(std::cos(ang), std::sin(ang));
-      for (int i = 0; i < n; i += len)
-      {
-        cplx w(1.f, 0.f);
-        for (int k = 0; k < len / 2; k++)
-        {
-          cplx u = a[i + k];
-          cplx v = a[i + k + len / 2] * w;
-          a[i + k] = u + v;
-          a[i + k + len / 2] = u - v;
-          w *= wlen;
-        }
-      }
-    }
+    float r = (float)std::rand() / (float)RAND_MAX;
+    if (r < 0.35f) // ~35% de chance qu'un declenchement devienne une rafale
+      mPendingBurstCount = 1 + (std::rand() % 4); // 1 a 4 coups supplementaires
+  }
 
-    if (invert)
+  int RandomBurstGapSamples() const
+  {
+    float ms = 10.f + ((float)std::rand() / (float)RAND_MAX) * 180.f; // 10-190ms, variable a chaque coup
+    return (int)(ms * 0.001f * mSampleRate);
+  }
+
+  int ComputeInternalDurationSamples() const
+  {
+    float ms = kInternalBaseMs;
+    if (mGlitchMode == (int)Mode::DureeVariable)
     {
-      for (auto& x : a)
-        x /= (float)n;
+      // Plage large et deliberement imprevisible : d'un accroc tres bref
+      // a un decrochage nettement plus long.
+      float factor = 0.1f + ((float)std::rand() / (float)RAND_MAX) * 4.9f; // 0.1x a 5x
+      ms = std::clamp(kInternalBaseMs * factor, 15.f, 3000.f);
+    }
+    return (int)(ms * 0.001f * mSampleRate);
+  }
+
+  // Lisse le point de bouclage du fragment capture (evite un clic a
+  // chaque repetition).
+  void SmoothLoopSeam(std::vector<float>& buf)
+  {
+    int fadeLen = std::max(2, mFragmentSamples / 10);
+    for (int i = 0; i < fadeLen; i++)
+    {
+      float t = (float)i / (float)fadeLen;
+      int idx = mFragmentSamples - fadeLen + i;
+      buf[idx] = buf[idx] * (1.f - t) + buf[0] * t;
     }
   }
 
-  void ProcessHop()
-  {
-    RebuildWindowIfNeeded();
+  State mState = State::Idle;
+  Source mTriggerSource = Source::None;
 
-    ReadRingIntoLinear(mRingIn, mTimeBuf);
+  static constexpr float kFragmentMs = 15.f;      // taille fixe de la "photo"
+  static constexpr float kInternalBaseMs = 150.f; // duree de base des glitches internes
+  static constexpr float kSidechainThreshold = 0.05f;
+  static constexpr int kMaxGlitchSamples = 5 * 48000; // filet de securite absolu
 
-    for (int i = 0; i < mFFTSize; i++)
-      mCplxBuf[i] = cplx(mTimeBuf[i] * mCurrentWindow[i], 0.f);
+  bool mEnabled = false;
 
-    FFT(mCplxBuf, false);
+  double mSampleRate = 44100.0;
+  int mFragmentSamples = 661;
+  std::vector<float> mFragmentBufL, mFragmentBufR;
+  int mCaptureIdx = 0;
+  int mLoopReadPos = 0;
+  int mSafetySamplesElapsed = 0;
 
-    // Etape 3 : Freq Swap (echange grave/aigu, en tete de chaine - une
-    // restructuration de position plus fondamentale que les deux effets
-    // "Mirror" qui suivent), puis Mag Mirror, puis Phase Mirror, avec
-    // compensation automatique de gain (le volume percu peut fortement
-    // chuter quand la magnitude s'aplatit et/ou que les phases s'alignent).
-    int numBins = mFFTSize / 2;
+  float mFreezeTimeMs = 200.f;
+  int mSidechainHangoverSamples = 0;
 
-    // Passe 1 : extrait magnitude/phase brutes, calcule la moyenne du bloc
-    // (point de symetrie du Mag Mirror ET de l'inversion en amont) et
-    // l'energie d'origine.
-    float sumMag = 0.f, origEnergy = 0.f;
-    for (int k = 0; k <= numBins; k++)
-    {
-      mMagBuf[k] = std::abs(mCplxBuf[k]);
-      mPhaseBuf[k] = std::arg(mCplxBuf[k]);
-      sumMag += mMagBuf[k];
-      origEnergy += mMagBuf[k] * mMagBuf[k];
-    }
-    float avgMag = sumMag / (float)(numBins + 1);
-
-    // Passe 1bis : inversion complete EN AMONT (magnitude autour de la
-    // moyenne, phase autour de zero) - si activee, etablit une nouvelle
-    // base sur laquelle Freq Swap et Mag Mirror agiront ensuite.
-    if (mInvertUpstream)
-    {
-      for (int k = 0; k <= numBins; k++)
-      {
-        mMagBuf[k] = std::max(0.f, 2.f * avgMag - mMagBuf[k]);
-        mPhaseBuf[k] = -mPhaseBuf[k];
-      }
-    }
-
-    // Passe 2 : Freq Swap (magnitude seulement - la phase de chaque bande
-    // reste toujours a sa place d'origine), applique uniquement A
-    // L'INTERIEUR d'une fenetre reglable (taille + position dans le
-    // spectre), miroir autour du CENTRE DE LA FENETRE. En dehors de la
-    // fenetre : inchange.
-    int windowBins = std::max(2, (int)std::round(mSwapWindowSize * (float)numBins));
-    int windowStart = (int)std::round(mSwapWindowPosition * (float)(numBins - windowBins));
-    int windowEnd = windowStart + windowBins;
-
-    for (int k = 0; k <= numBins; k++)
-    {
-      if (k >= windowStart && k <= windowEnd)
-      {
-        int partner = windowStart + (windowEnd - k);
-        float swappedMag = mMagBuf[partner];
-        mMagBuf2[k] = mMagBuf[k] * (1.f - mFreqSwap) + swappedMag * mFreqSwap;
-      }
-      else
-      {
-        mMagBuf2[k] = mMagBuf[k];
-      }
-    }
-
-    // Passe 3 : Mag Mirror, applique sur le resultat du Freq Swap.
-    float newEnergy = 0.f;
-    for (int k = 0; k <= numBins; k++)
-    {
-      float magMirrored = std::max(0.f, 2.f * avgMag - mMagBuf2[k]);
-      float finalMag = mMagBuf2[k] * (1.f - mMagMirror) + magMirrored * mMagMirror;
-      mMagBuf[k] = finalMag;
-      newEnergy += finalMag * finalMag;
-    }
-
-    // Compensation de gain : ramene l'energie du bloc a ce qu'elle etait
-    // avant les transformations. PLAFONNEE volontairement (0.25x a 4x)
-    // pour eviter tout emballement, plus une rattrape calibree
-    // specifiquement sur le Phase Mirror (l'energie seule ne suffit pas a
-    // compenser sa perte de crete, voir GetPhaseMirrorMakeupGain()).
-    float gain = std::sqrt(origEnergy / std::max(newEnergy, 1e-9f));
-    gain = std::clamp(gain, 0.25f, 4.f);
-    gain *= GetPhaseMirrorMakeupGain();
-
-    // Passe finale : Phase Mirror (sur la phase issue de la passe 1bis,
-    // inversee ou non selon Invert Upstream) puis reconstruction.
-    for (int k = 0; k <= numBins; k++)
-    {
-      float mag = mMagBuf[k] * gain;
-      float phase = mPhaseBuf[k];
-
-      float phaseMirrored = -phase;
-      phase = phase * (1.f - mPhaseMirror) + phaseMirrored * mPhaseMirror;
-
-      cplx val(mag * std::cos(phase), mag * std::sin(phase));
-      mCplxBuf[k] = val;
-      if (k > 0 && k < numBins)
-        mCplxBuf[mFFTSize - k] = std::conj(val);
-    }
-
-    FFT(mCplxBuf, true);
-
-    float normOverlap = 1.f / (float)mOverlap * 2.f;
-    int start = mWritePos;
-    for (int i = 0; i < mFFTSize; i++)
-    {
-      int idx = (start + i) % mFFTSize;
-      mRingOut[idx] += mCplxBuf[i].real() * mCurrentWindow[i] * normOverlap;
-    }
-  }
-
-  // Rattrape de gain calibree empiriquement sur des mesures reelles :
-  // Phase Mirror provoque une perte de crete que la compensation d'energie
-  // (Parseval) ne couvre pas (l'energie totale ne depend pas de la phase,
-  // mais le niveau de crete si). Points mesures : 0% -> -8dB, 50% -> -24.5dB
-  // (perte max), 100% -> -13.5dB (remonte partiellement). Interpolation
-  // lineaire en dB entre ces 3 points de reference.
-  float GetPhaseMirrorMakeupGain() const
-  {
-    float t = mPhaseMirror;
-    float boostDb;
-    if (t <= 0.5f)
-      boostDb = 16.5f * (t / 0.5f);
-    else
-      boostDb = 16.5f + (5.5f - 16.5f) * ((t - 0.5f) / 0.5f);
-
-    return std::pow(10.f, boostDb / 20.f);
-  }
-
-  static constexpr float kPi = 3.14159265358979323846f;
-
-  int mFFTSize = 1024;
-  int mOverlap = 2;
-  int mHopSize = 512;
-  int mSamplesUntilHop = 512;
-  int mWritePos = 0;
-  int mReadPos = 0;
-
-  float mWindowCyclesBase = 1.f;
-  float mWindowPixelAmount = 0.f;
-  bool mWindowDirty = true;
-  std::vector<float> mCurrentWindow;
-  std::vector<float> mWindowUIBuf;
-  bool mWindowUIUpdated = false;
-
-  std::vector<float> mRingIn, mRingOut;
-  std::vector<float> mTimeBuf;
-  std::vector<cplx> mCplxBuf;
-  std::vector<float> mMagBuf, mMagBuf2, mPhaseBuf;
-
-  float mMagMirror = 0.f;
-  float mPhaseMirror = 0.f;
-  float mFreqSwap = 0.f;
-  float mSwapWindowSize = 1.f;     // 1 = tout le spectre (comportement d'origine)
-  float mSwapWindowPosition = 0.f; // 0 = fenetre collee au grave
-  bool mInvertUpstream = false;    // inversion complete magnitude+phase, en amont de tout le reste
+  float mEventsPerSecond = 0.f;
+  int mGlitchMode = 0;
+  int mSamplesUntilNextTrigger = 0;
+  int mInternalSamplesRemaining = 0;
+  int mPendingBurstCount = 0;
+  int mBurstGapRemaining = 0;
 };

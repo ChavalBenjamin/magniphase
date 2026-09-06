@@ -31,8 +31,6 @@ MagniPhase::MagniPhase(const InstanceInfo& info)
     pGraphics->AttachPanelBackground(COLOR_GRAY);
     pGraphics->LoadFont("Roboto-Regular", ROBOTO_FN);
 
-    // Meme equilibre visuel que TroisCorpsWave : boutons agrandis, nom du
-    // parametre reduit au-dessus, valeur laissee a sa taille normale.
     const IVStyle knobStyle = DEFAULT_STYLE.WithLabelText(IText(10.f, COLOR_WHITE));
 
     const IRECT bounds = pGraphics->GetBounds();
@@ -52,14 +50,15 @@ MagniPhase::MagniPhase(const InstanceInfo& info)
 
     pGraphics->AttachControl(new IVMenuButtonControl(controlsArea.GetGridCell(3, 0, 6, 3).GetCentredInside(95.f, 32.f), kParamInvertUpstream, "Invert"));
 
-    // --- Glitch (side-chain) ---
+    // --- Glitch (Aux) ---
     pGraphics->AttachControl(new IVKnobControl(controlsArea.GetGridCell(4, 0, 6, 3).GetCentredInside(64.f), kParamGlitchFreezeTime, "Freeze", knobStyle));
     pGraphics->AttachControl(new IVKnobControl(controlsArea.GetGridCell(4, 1, 6, 3).GetCentredInside(64.f), kParamGlitchRate, "Rate", knobStyle));
     pGraphics->AttachControl(new IVMenuButtonControl(controlsArea.GetGridCell(4, 2, 6, 3).GetCentredInside(95.f, 32.f), kParamGlitchMode, "Mode"));
 
     pGraphics->AttachControl(new IVMenuButtonControl(controlsArea.GetGridCell(5, 0, 6, 3).GetCentredInside(95.f, 32.f), kParamGlitchEnable, "Glitch"));
 
-    // Petite fenetre de visualisation de la forme de fenetre Hann generee.
+    // Petite fenetre de visualisation de la forme de fenetre Hann generee
+    // (identique sur les deux canaux, un seul apercu suffit).
     IRECT windowViewArea = IRECT(bounds.L, bounds.T + bounds.H() * 0.6f, bounds.R, bounds.B).GetPadded(-20.f);
     mWindowView = new WindowPreviewControl(windowViewArea);
     pGraphics->AttachControl(mWindowView);
@@ -74,9 +73,11 @@ MagniPhase::MagniPhase(const InstanceInfo& info)
 void MagniPhase::OnIdle()
 {
 #if IPLUG_DSP
-  if (mWindowView && mEngine.WindowUIUpdated())
+  // Les deux canaux partagent les memes parametres de fenetre -> un seul
+  // apercu suffit, on lit celui du canal gauche.
+  if (mWindowView && mEngineL.WindowUIUpdated())
   {
-    mWindowView->SetWaveform(mEngine.GetWindowForUI(), mEngine.GetWindowSizeForUI());
+    mWindowView->SetWaveform(mEngineL.GetWindowForUI(), mEngineL.GetWindowSizeForUI());
     mWindowView->SetDirty(false);
   }
 #endif
@@ -92,15 +93,27 @@ void MagniPhase::UpdateEngineParams()
   int overlapIdx = (int)GetParam(kParamOverlap)->Value();
   int overlap = (overlapIdx == 0) ? 2 : 4;
 
-  mEngine.Init(fftSize, overlap);
-  mEngine.SetWindowCycles((float)GetParam(kParamWindowCycles)->Value());
-  mEngine.SetWindowPixelAmount((float)(GetParam(kParamWindowPixelLevels)->Value() / 100.0));
-  mEngine.SetMagMirror((float)(GetParam(kParamMagMirror)->Value() / 100.0));
-  mEngine.SetPhaseMirror((float)(GetParam(kParamPhaseMirror)->Value() / 100.0));
-  mEngine.SetFreqSwap((float)(GetParam(kParamFreqSwap)->Value() / 100.0));
-  mEngine.SetSwapWindowSize((float)(GetParam(kParamSwapWindowSize)->Value() / 100.0));
-  mEngine.SetSwapWindowPosition((float)(GetParam(kParamSwapWindowPosition)->Value() / 100.0));
-  mEngine.SetInvertUpstream((int)GetParam(kParamInvertUpstream)->Value() != 0);
+  float windowCycles = (float)GetParam(kParamWindowCycles)->Value();
+  float windowPixel = (float)(GetParam(kParamWindowPixelLevels)->Value() / 100.0);
+  float magMirror = (float)(GetParam(kParamMagMirror)->Value() / 100.0);
+  float phaseMirror = (float)(GetParam(kParamPhaseMirror)->Value() / 100.0);
+  float freqSwap = (float)(GetParam(kParamFreqSwap)->Value() / 100.0);
+  float swapSize = (float)(GetParam(kParamSwapWindowSize)->Value() / 100.0);
+  float swapPos = (float)(GetParam(kParamSwapWindowPosition)->Value() / 100.0);
+  bool invertUp = (int)GetParam(kParamInvertUpstream)->Value() != 0;
+
+  for (MagniPhaseEngine* eng : { &mEngineL, &mEngineR })
+  {
+    eng->Init(fftSize, overlap);
+    eng->SetWindowCycles(windowCycles);
+    eng->SetWindowPixelAmount(windowPixel);
+    eng->SetMagMirror(magMirror);
+    eng->SetPhaseMirror(phaseMirror);
+    eng->SetFreqSwap(freqSwap);
+    eng->SetSwapWindowSize(swapSize);
+    eng->SetSwapWindowPosition(swapPos);
+    eng->SetInvertUpstream(invertUp);
+  }
 
   mGlitchEngine.Init(GetSampleRate());
   mGlitchEngine.SetFreezeTime((float)GetParam(kParamGlitchFreezeTime)->Value());
@@ -120,32 +133,64 @@ void MagniPhase::OnParamChange(int paramIdx)
   {
     case kParamFFTSize:
     case kParamOverlap:
-      UpdateEngineParams(); // reinitialise le moteur (taille FFT/overlap changes)
+      UpdateEngineParams(); // reinitialise les deux moteurs (taille FFT/overlap changes)
       break;
     case kParamWindowCycles:
-      mEngine.SetWindowCycles((float)GetParam(kParamWindowCycles)->Value());
+    {
+      float v = (float)GetParam(kParamWindowCycles)->Value();
+      mEngineL.SetWindowCycles(v);
+      mEngineR.SetWindowCycles(v);
       break;
+    }
     case kParamWindowPixelLevels:
-      mEngine.SetWindowPixelAmount((float)(GetParam(kParamWindowPixelLevels)->Value() / 100.0));
+    {
+      float v = (float)(GetParam(kParamWindowPixelLevels)->Value() / 100.0);
+      mEngineL.SetWindowPixelAmount(v);
+      mEngineR.SetWindowPixelAmount(v);
       break;
+    }
     case kParamMagMirror:
-      mEngine.SetMagMirror((float)(GetParam(kParamMagMirror)->Value() / 100.0));
+    {
+      float v = (float)(GetParam(kParamMagMirror)->Value() / 100.0);
+      mEngineL.SetMagMirror(v);
+      mEngineR.SetMagMirror(v);
       break;
+    }
     case kParamPhaseMirror:
-      mEngine.SetPhaseMirror((float)(GetParam(kParamPhaseMirror)->Value() / 100.0));
+    {
+      float v = (float)(GetParam(kParamPhaseMirror)->Value() / 100.0);
+      mEngineL.SetPhaseMirror(v);
+      mEngineR.SetPhaseMirror(v);
       break;
+    }
     case kParamFreqSwap:
-      mEngine.SetFreqSwap((float)(GetParam(kParamFreqSwap)->Value() / 100.0));
+    {
+      float v = (float)(GetParam(kParamFreqSwap)->Value() / 100.0);
+      mEngineL.SetFreqSwap(v);
+      mEngineR.SetFreqSwap(v);
       break;
+    }
     case kParamSwapWindowSize:
-      mEngine.SetSwapWindowSize((float)(GetParam(kParamSwapWindowSize)->Value() / 100.0));
+    {
+      float v = (float)(GetParam(kParamSwapWindowSize)->Value() / 100.0);
+      mEngineL.SetSwapWindowSize(v);
+      mEngineR.SetSwapWindowSize(v);
       break;
+    }
     case kParamSwapWindowPosition:
-      mEngine.SetSwapWindowPosition((float)(GetParam(kParamSwapWindowPosition)->Value() / 100.0));
+    {
+      float v = (float)(GetParam(kParamSwapWindowPosition)->Value() / 100.0);
+      mEngineL.SetSwapWindowPosition(v);
+      mEngineR.SetSwapWindowPosition(v);
       break;
+    }
     case kParamInvertUpstream:
-      mEngine.SetInvertUpstream((int)GetParam(kParamInvertUpstream)->Value() != 0);
+    {
+      bool v = (int)GetParam(kParamInvertUpstream)->Value() != 0;
+      mEngineL.SetInvertUpstream(v);
+      mEngineR.SetInvertUpstream(v);
       break;
+    }
     case kParamGlitchFreezeTime:
       mGlitchEngine.SetFreezeTime((float)GetParam(kParamGlitchFreezeTime)->Value());
       break;
@@ -165,30 +210,42 @@ void MagniPhase::OnParamChange(int paramIdx)
 
 void MagniPhase::ProcessBlock(sample** inputs, sample** outputs, int nFrames)
 {
-  // Canal 0 = entree principale (mono). Canal 1 = entree side-chain (le
-  // second bus declare dans PLUG_CHANNEL_IO), utilisee uniquement comme
-  // declencheur pour le glitch - jamais mixee dans la sortie audio.
-  mInBuf.resize(nFrames);
-  mOutBuf.resize(nFrames);
+  // Canaux 0/1 = entree principale stereo. Canal 2 (si present) = Aux
+  // mono, le second bus declare dans PLUG_CHANNEL_IO - utilise UNIQUEMENT
+  // comme declencheur du glitch, jamais mixe dans la sortie audio.
+  mInBufL.resize(nFrames);
+  mInBufR.resize(nFrames);
+  mOutBufL.resize(nFrames);
+  mOutBufR.resize(nFrames);
   mSidechainBuf.resize(nFrames);
-  mGlitchOutBuf.resize(nFrames);
+  mGlitchOutBufL.resize(nFrames);
+  mGlitchOutBufR.resize(nFrames);
 
-  bool hasSidechain = (inputs[1] != nullptr);
+  bool hasSidechain = (inputs[2] != nullptr);
 
   for (int i = 0; i < nFrames; i++)
   {
-    mInBuf[i] = (float)inputs[0][i];
-    mSidechainBuf[i] = hasSidechain ? (float)inputs[1][i] : 0.f;
+    mInBufL[i] = (float)inputs[0][i];
+    mInBufR[i] = (float)inputs[1][i];
+    mSidechainBuf[i] = hasSidechain ? (float)inputs[2][i] : 0.f;
   }
 
-  // 1) Traitement spectral (MagniPhaseEngine)
-  mEngine.Process(mInBuf.data(), mOutBuf.data(), nFrames);
+  // 1) Traitement spectral (un moteur independant par canal)
+  mEngineL.Process(mInBufL.data(), mOutBufL.data(), nFrames);
+  mEngineR.Process(mInBufR.data(), mOutBufR.data(), nFrames);
 
-  // 2) Glitch temporel applique sur le resultat, declenche par la side-chain
-  mGlitchEngine.Process(mOutBuf.data(), hasSidechain ? mSidechainBuf.data() : nullptr, mGlitchOutBuf.data(), nFrames);
+  // 2) Glitch temporel stereo, applique sur le resultat, declenche par
+  // l'Aux (les deux canaux sont geres ENSEMBLE pour garder l'image
+  // stereo coherente).
+  mGlitchEngine.Process(mOutBufL.data(), mOutBufR.data(),
+                         hasSidechain ? mSidechainBuf.data() : nullptr,
+                         mGlitchOutBufL.data(), mGlitchOutBufR.data(), nFrames);
 
   for (int i = 0; i < nFrames; i++)
-    outputs[0][i] = mGlitchOutBuf[i];
+  {
+    outputs[0][i] = mGlitchOutBufL[i];
+    outputs[1][i] = mGlitchOutBufR[i];
+  }
 }
 
 #endif
