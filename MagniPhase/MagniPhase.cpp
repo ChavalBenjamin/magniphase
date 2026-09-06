@@ -15,6 +15,9 @@ MagniPhase::MagniPhase(const InstanceInfo& info)
   GetParam(kParamSwapWindowSize)->InitPercentage("Swap Size", 100.);
   GetParam(kParamSwapWindowPosition)->InitPercentage("Swap Pos", 0.);
   GetParam(kParamInvertUpstream)->InitEnum("Invert", 0, 2, "", IParam::kFlagsNone, "", "Off", "On");
+  GetParam(kParamGlitchFreezeTime)->InitDouble("Freeze", 200., 20., 10000., 1., "ms");
+  GetParam(kParamGlitchRate)->InitPercentage("Rate", 0.);
+  GetParam(kParamGlitchMode)->InitEnum("Mode", 0, 3, "", IParam::kFlagsNone, "", "Poisson", "Rafales", "Duree Var.");
 
 #if IPLUG_EDITOR
   mMakeGraphicsFunc = [&]() {
@@ -34,19 +37,24 @@ MagniPhase::MagniPhase(const InstanceInfo& info)
     const IRECT bounds = pGraphics->GetBounds();
     IRECT controlsArea = bounds.GetFromTop(bounds.H() * 0.6f).GetPadded(-20.f);
 
-    pGraphics->AttachControl(new IVMenuButtonControl(controlsArea.GetGridCell(0, 0, 4, 3).GetCentredInside(95.f, 32.f), kParamFFTSize, "FFT Size"));
-    pGraphics->AttachControl(new IVMenuButtonControl(controlsArea.GetGridCell(0, 1, 4, 3).GetCentredInside(95.f, 32.f), kParamOverlap, "Overlap"));
-    pGraphics->AttachControl(new IVKnobControl(controlsArea.GetGridCell(0, 2, 4, 3).GetCentredInside(64.f), kParamWindowCycles, "Cycles", knobStyle));
+    pGraphics->AttachControl(new IVMenuButtonControl(controlsArea.GetGridCell(0, 0, 5, 3).GetCentredInside(95.f, 32.f), kParamFFTSize, "FFT Size"));
+    pGraphics->AttachControl(new IVMenuButtonControl(controlsArea.GetGridCell(0, 1, 5, 3).GetCentredInside(95.f, 32.f), kParamOverlap, "Overlap"));
+    pGraphics->AttachControl(new IVKnobControl(controlsArea.GetGridCell(0, 2, 5, 3).GetCentredInside(64.f), kParamWindowCycles, "Cycles", knobStyle));
 
-    pGraphics->AttachControl(new IVKnobControl(controlsArea.GetGridCell(1, 0, 4, 3).GetCentredInside(64.f), kParamWindowPixelLevels, "Pixel", knobStyle));
-    pGraphics->AttachControl(new IVKnobControl(controlsArea.GetGridCell(1, 1, 4, 3).GetCentredInside(64.f), kParamMagMirror, "Mag Mirror", knobStyle));
-    pGraphics->AttachControl(new IVKnobControl(controlsArea.GetGridCell(1, 2, 4, 3).GetCentredInside(64.f), kParamPhaseMirror, "Phase Mirror", knobStyle));
+    pGraphics->AttachControl(new IVKnobControl(controlsArea.GetGridCell(1, 0, 5, 3).GetCentredInside(64.f), kParamWindowPixelLevels, "Pixel", knobStyle));
+    pGraphics->AttachControl(new IVKnobControl(controlsArea.GetGridCell(1, 1, 5, 3).GetCentredInside(64.f), kParamMagMirror, "Mag Mirror", knobStyle));
+    pGraphics->AttachControl(new IVKnobControl(controlsArea.GetGridCell(1, 2, 5, 3).GetCentredInside(64.f), kParamPhaseMirror, "Phase Mirror", knobStyle));
 
-    pGraphics->AttachControl(new IVKnobControl(controlsArea.GetGridCell(2, 0, 4, 3).GetCentredInside(64.f), kParamFreqSwap, "Freq Swap", knobStyle));
-    pGraphics->AttachControl(new IVKnobControl(controlsArea.GetGridCell(2, 1, 4, 3).GetCentredInside(64.f), kParamSwapWindowSize, "Swap Size", knobStyle));
-    pGraphics->AttachControl(new IVKnobControl(controlsArea.GetGridCell(2, 2, 4, 3).GetCentredInside(64.f), kParamSwapWindowPosition, "Swap Pos", knobStyle));
+    pGraphics->AttachControl(new IVKnobControl(controlsArea.GetGridCell(2, 0, 5, 3).GetCentredInside(64.f), kParamFreqSwap, "Freq Swap", knobStyle));
+    pGraphics->AttachControl(new IVKnobControl(controlsArea.GetGridCell(2, 1, 5, 3).GetCentredInside(64.f), kParamSwapWindowSize, "Swap Size", knobStyle));
+    pGraphics->AttachControl(new IVKnobControl(controlsArea.GetGridCell(2, 2, 5, 3).GetCentredInside(64.f), kParamSwapWindowPosition, "Swap Pos", knobStyle));
 
-    pGraphics->AttachControl(new IVMenuButtonControl(controlsArea.GetGridCell(3, 0, 4, 3).GetCentredInside(95.f, 32.f), kParamInvertUpstream, "Invert"));
+    pGraphics->AttachControl(new IVMenuButtonControl(controlsArea.GetGridCell(3, 0, 5, 3).GetCentredInside(95.f, 32.f), kParamInvertUpstream, "Invert"));
+
+    // --- Glitch (side-chain) ---
+    pGraphics->AttachControl(new IVKnobControl(controlsArea.GetGridCell(4, 0, 5, 3).GetCentredInside(64.f), kParamGlitchFreezeTime, "Freeze", knobStyle));
+    pGraphics->AttachControl(new IVKnobControl(controlsArea.GetGridCell(4, 1, 5, 3).GetCentredInside(64.f), kParamGlitchRate, "Rate", knobStyle));
+    pGraphics->AttachControl(new IVMenuButtonControl(controlsArea.GetGridCell(4, 2, 5, 3).GetCentredInside(95.f, 32.f), kParamGlitchMode, "Mode"));
 
     // Petite fenetre de visualisation de la forme de fenetre Hann generee.
     IRECT windowViewArea = IRECT(bounds.L, bounds.T + bounds.H() * 0.6f, bounds.R, bounds.B).GetPadded(-20.f);
@@ -90,6 +98,11 @@ void MagniPhase::UpdateEngineParams()
   mEngine.SetSwapWindowSize((float)(GetParam(kParamSwapWindowSize)->Value() / 100.0));
   mEngine.SetSwapWindowPosition((float)(GetParam(kParamSwapWindowPosition)->Value() / 100.0));
   mEngine.SetInvertUpstream((int)GetParam(kParamInvertUpstream)->Value() != 0);
+
+  mGlitchEngine.Init(GetSampleRate());
+  mGlitchEngine.SetFreezeTime((float)GetParam(kParamGlitchFreezeTime)->Value());
+  mGlitchEngine.SetRandomRate((float)(GetParam(kParamGlitchRate)->Value() / 100.0));
+  mGlitchEngine.SetGlitchMode((int)GetParam(kParamGlitchMode)->Value());
 }
 
 void MagniPhase::OnReset()
@@ -129,6 +142,15 @@ void MagniPhase::OnParamChange(int paramIdx)
     case kParamInvertUpstream:
       mEngine.SetInvertUpstream((int)GetParam(kParamInvertUpstream)->Value() != 0);
       break;
+    case kParamGlitchFreezeTime:
+      mGlitchEngine.SetFreezeTime((float)GetParam(kParamGlitchFreezeTime)->Value());
+      break;
+    case kParamGlitchRate:
+      mGlitchEngine.SetRandomRate((float)(GetParam(kParamGlitchRate)->Value() / 100.0));
+      break;
+    case kParamGlitchMode:
+      mGlitchEngine.SetGlitchMode((int)GetParam(kParamGlitchMode)->Value());
+      break;
     default:
       break;
   }
@@ -136,17 +158,30 @@ void MagniPhase::OnParamChange(int paramIdx)
 
 void MagniPhase::ProcessBlock(sample** inputs, sample** outputs, int nFrames)
 {
-  // Mono pour l'etape 1 : on ne traite que le canal 0.
+  // Canal 0 = entree principale (mono). Canal 1 = entree side-chain (le
+  // second bus declare dans PLUG_CHANNEL_IO), utilisee uniquement comme
+  // declencheur pour le glitch - jamais mixee dans la sortie audio.
   mInBuf.resize(nFrames);
   mOutBuf.resize(nFrames);
+  mSidechainBuf.resize(nFrames);
+  mGlitchOutBuf.resize(nFrames);
+
+  bool hasSidechain = (inputs[1] != nullptr);
 
   for (int i = 0; i < nFrames; i++)
+  {
     mInBuf[i] = (float)inputs[0][i];
+    mSidechainBuf[i] = hasSidechain ? (float)inputs[1][i] : 0.f;
+  }
 
+  // 1) Traitement spectral (MagniPhaseEngine)
   mEngine.Process(mInBuf.data(), mOutBuf.data(), nFrames);
 
+  // 2) Glitch temporel applique sur le resultat, declenche par la side-chain
+  mGlitchEngine.Process(mOutBuf.data(), hasSidechain ? mSidechainBuf.data() : nullptr, mGlitchOutBuf.data(), nFrames);
+
   for (int i = 0; i < nFrames; i++)
-    outputs[0][i] = mOutBuf[i];
+    outputs[0][i] = mGlitchOutBuf[i];
 }
 
 #endif
