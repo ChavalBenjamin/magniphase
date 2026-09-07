@@ -66,8 +66,22 @@ public:
   void SetEnabled(bool enabled) { mEnabled = enabled; }
 
   // Temps de maintien (ms) APRES la disparition du signal Aux, avant de
-  // relacher. Ne concerne QUE le side-chain.
+  // relacher. Ne concerne QUE le side-chain. Ignore si le mode synchronise
+  // au tempo est actif (voir SetFreezeSync).
   void SetFreezeTime(float ms) { mFreezeTimeMs = std::clamp(ms, 20.f, 10000.f); }
+
+  // Division rythmique pour le mode synchronise au tempo.
+  enum class NoteValue {
+    Half = 0, Quarter, Eighth, Sixteenth, ThirtySecond, SixtyFourth,
+    EighthTriplet, SixteenthTriplet, ThirtySecondTriplet
+  };
+
+  void SetFreezeSync(bool synced) { mFreezeSynced = synced; }
+  void SetFreezeNoteValue(int noteValueIdx) { mFreezeNoteValue = std::clamp(noteValueIdx, 0, 8); }
+
+  // Tempo courant de l'hote (BPM) - a fournir a chaque bloc, ne sert que
+  // si le mode synchronise est actif.
+  void SetHostTempo(double bpm) { mHostTempo = (bpm > 0.0) ? bpm : 120.0; }
 
   // Vitesse du declenchement interne, 0 (jamais) a 1 (tres souvent).
   // Echelle logarithmique : ~0.01 evenement/s au minimum utile jusqu'a
@@ -77,6 +91,7 @@ public:
   {
     rate01 = std::clamp(rate01, 0.f, 1.f);
     mEventsPerSecond = (rate01 <= 0.001f) ? 0.f : std::pow(10.f, -2.f + rate01 * 3.f);
+    ScheduleNextInternalTrigger(); // reagit immediatement, sans attendre l'ancien delai deja programme
   }
 
   void SetGlitchMode(int mode) { mGlitchMode = std::clamp(mode, 0, 2); }
@@ -102,7 +117,7 @@ public:
       {
         if (mState == State::Idle)
           TriggerGlitch(Source::Sidechain);
-        mSidechainHangoverSamples = (int)(mFreezeTimeMs * 0.001 * mSampleRate);
+        mSidechainHangoverSamples = (int)(GetEffectiveFreezeMs() * 0.001 * mSampleRate);
       }
       else if (mTriggerSource == Source::Sidechain && mState != State::Idle)
       {
@@ -216,6 +231,30 @@ private:
   // Calcule le delai jusqu'au prochain declenchement interne via une loi
   // exponentielle (methode standard pour simuler un vrai processus de
   // Poisson) - robuste numeriquement.
+  // Duree effective du temps de maintien, en ms : soit la valeur libre
+  // (SetFreezeTime), soit calculee depuis le tempo hote + la division
+  // rythmique choisie, si le mode synchronise est actif.
+  float GetEffectiveFreezeMs() const
+  {
+    if (!mFreezeSynced) return mFreezeTimeMs;
+
+    float quarterMs = 60000.f / (float)mHostTempo;
+
+    switch ((NoteValue)mFreezeNoteValue)
+    {
+      case NoteValue::Half:               return quarterMs * 2.f;
+      case NoteValue::Quarter:             return quarterMs;
+      case NoteValue::Eighth:              return quarterMs * 0.5f;
+      case NoteValue::Sixteenth:           return quarterMs * 0.25f;
+      case NoteValue::ThirtySecond:        return quarterMs * 0.125f;
+      case NoteValue::SixtyFourth:         return quarterMs * 0.0625f;
+      case NoteValue::EighthTriplet:       return quarterMs * 0.5f * (2.f / 3.f);
+      case NoteValue::SixteenthTriplet:    return quarterMs * 0.25f * (2.f / 3.f);
+      case NoteValue::ThirtySecondTriplet: return quarterMs * 0.125f * (2.f / 3.f);
+      default: return quarterMs;
+    }
+  }
+
   void ScheduleNextInternalTrigger()
   {
     if (mEventsPerSecond <= 0.f) { mSamplesUntilNextTrigger = 0x7fffffff; return; }
@@ -288,6 +327,9 @@ private:
   int mSafetySamplesElapsed = 0;
 
   float mFreezeTimeMs = 200.f;
+  bool mFreezeSynced = false;
+  int mFreezeNoteValue = 2; // par defaut : 1/8
+  double mHostTempo = 120.0;
   int mSidechainHangoverSamples = 0;
 
   float mEventsPerSecond = 0.f;

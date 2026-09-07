@@ -16,6 +16,9 @@ MagniPhase::MagniPhase(const InstanceInfo& info)
   GetParam(kParamSwapWindowPosition)->InitPercentage("Swap Pos", 0.);
   GetParam(kParamInvertUpstream)->InitEnum("Invert", 0, 2, "", IParam::kFlagsNone, "", "Off", "On");
   GetParam(kParamGlitchFreezeTime)->InitDouble("Freeze", 200., 20., 10000., 1., "ms");
+  GetParam(kParamGlitchFreezeSync)->InitEnum("Sync", 0, 2, "", IParam::kFlagsNone, "", "Off", "On");
+  GetParam(kParamGlitchFreezeNote)->InitEnum("Note", 2, 9, "", IParam::kFlagsNone, "",
+    "1/2", "1/4", "1/8", "1/16", "1/32", "1/64", "1/8T", "1/16T", "1/32T");
   GetParam(kParamGlitchRate)->InitPercentage("Rate", 0.);
   GetParam(kParamGlitchMode)->InitEnum("Mode", 0, 3, "", IParam::kFlagsNone, "", "Poisson", "Rafales", "Duree Var.");
   GetParam(kParamGlitchEnable)->InitEnum("Glitch", 0, 2, "", IParam::kFlagsNone, "", "Off", "On");
@@ -56,6 +59,8 @@ MagniPhase::MagniPhase(const InstanceInfo& info)
     pGraphics->AttachControl(new IVMenuButtonControl(controlsArea.GetGridCell(4, 2, 6, 3).GetCentredInside(95.f, 32.f), kParamGlitchMode, "Mode"));
 
     pGraphics->AttachControl(new IVMenuButtonControl(controlsArea.GetGridCell(5, 0, 6, 3).GetCentredInside(95.f, 32.f), kParamGlitchEnable, "Glitch"));
+    pGraphics->AttachControl(new IVMenuButtonControl(controlsArea.GetGridCell(5, 1, 6, 3).GetCentredInside(95.f, 32.f), kParamGlitchFreezeSync, "Sync"));
+    pGraphics->AttachControl(new IVMenuButtonControl(controlsArea.GetGridCell(5, 2, 6, 3).GetCentredInside(95.f, 32.f), kParamGlitchFreezeNote, "Note"));
 
     // Petite fenetre de visualisation de la forme de fenetre Hann generee
     // (identique sur les deux canaux, un seul apercu suffit).
@@ -117,6 +122,8 @@ void MagniPhase::UpdateEngineParams()
 
   mGlitchEngine.Init(GetSampleRate());
   mGlitchEngine.SetFreezeTime((float)GetParam(kParamGlitchFreezeTime)->Value());
+  mGlitchEngine.SetFreezeSync((int)GetParam(kParamGlitchFreezeSync)->Value() != 0);
+  mGlitchEngine.SetFreezeNoteValue((int)GetParam(kParamGlitchFreezeNote)->Value());
   mGlitchEngine.SetRandomRate((float)(GetParam(kParamGlitchRate)->Value() / 100.0));
   mGlitchEngine.SetGlitchMode((int)GetParam(kParamGlitchMode)->Value());
   mGlitchEngine.SetEnabled((int)GetParam(kParamGlitchEnable)->Value() != 0);
@@ -194,6 +201,12 @@ void MagniPhase::OnParamChange(int paramIdx)
     case kParamGlitchFreezeTime:
       mGlitchEngine.SetFreezeTime((float)GetParam(kParamGlitchFreezeTime)->Value());
       break;
+    case kParamGlitchFreezeSync:
+      mGlitchEngine.SetFreezeSync((int)GetParam(kParamGlitchFreezeSync)->Value() != 0);
+      break;
+    case kParamGlitchFreezeNote:
+      mGlitchEngine.SetFreezeNoteValue((int)GetParam(kParamGlitchFreezeNote)->Value());
+      break;
     case kParamGlitchRate:
       mGlitchEngine.SetRandomRate((float)(GetParam(kParamGlitchRate)->Value() / 100.0));
       break;
@@ -236,7 +249,9 @@ void MagniPhase::ProcessBlock(sample** inputs, sample** outputs, int nFrames)
 
   // 2) Glitch temporel stereo, applique sur le resultat, declenche par
   // l'Aux (les deux canaux sont geres ENSEMBLE pour garder l'image
-  // stereo coherente).
+  // stereo coherente). Tempo hote fourni a chaque bloc (utilise
+  // uniquement si le mode Sync est actif).
+  mGlitchEngine.SetHostTempo(GetTempo());
   mGlitchEngine.Process(mOutBufL.data(), mOutBufR.data(),
                          hasSidechain ? mSidechainBuf.data() : nullptr,
                          mGlitchOutBufL.data(), mGlitchOutBufR.data(), nFrames);

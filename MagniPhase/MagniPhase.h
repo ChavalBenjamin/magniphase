@@ -34,7 +34,9 @@ enum EParams
   kParamSwapWindowSize,     // 0-1 : largeur de la zone concernee par Freq Swap (1 = tout le spectre)
   kParamSwapWindowPosition, // 0-1 : position de cette zone dans le spectre (deforme, voir moteur)
   kParamInvertUpstream,     // Off/On : inversion complete magnitude+phase, en amont de tout le reste
-  kParamGlitchFreezeTime,   // 20-10000ms : temps de maintien du glitch declenche par l'Aux
+  kParamGlitchFreezeTime,   // 20-10000ms : temps de maintien du glitch declenche par l'Aux (mode libre)
+  kParamGlitchFreezeSync,   // Off/On : bascule Freeze en division rythmique plutot qu'en ms
+  kParamGlitchFreezeNote,   // division rythmique (1/2 -> 1/64, + ternaire 1/8T -> 1/32T)
   kParamGlitchRate,         // 0-100% : frequence du declenchement interne (jamais -> tres souvent)
   kParamGlitchMode,         // Poisson / Rafales / Duree variable
   kParamGlitchEnable,       // Off/On : interrupteur general de toute la section Glitch
