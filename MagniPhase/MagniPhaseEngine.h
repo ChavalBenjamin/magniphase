@@ -96,15 +96,15 @@ public:
   void SetSwapWindowSize(float size) { mSwapWindowSize = std::clamp(size, 0.f, 1.f); }
 
   // Position de la fenetre de Freq Swap, avec deformation non-lineaire :
-  // les 50% premiers du parcours du bouton couvrent les 15% premiers de
-  // la valeur reelle (zone la plus sensible/utile, dilatee pour plus de
-  // precision), le reste suit une courbe exponentielle. rawT = position
-  // brute du bouton (0-1, linaire, ce que le parametre iPlug2 envoie).
+  // les 70% premiers du parcours du bouton couvrent les 20% premiers de
+  // la valeur reelle (zone la plus sensible/utile, tres dilatee pour plus
+  // de precision), le reste suit une courbe exponentielle. rawT =
+  // position brute du bouton (0-1, lineaire, ce que le parametre iPlug2 envoie).
   void SetSwapWindowPosition(float rawT)
   {
     rawT = std::clamp(rawT, 0.f, 1.f);
-    constexpr float kSplitKnob = 0.5f;   // 50% du bouton...
-    constexpr float kSplitValue = 0.15f; // ...= 15% premiers de la valeur
+    constexpr float kSplitKnob = 0.7f;   // 70% du bouton...
+    constexpr float kSplitValue = 0.20f; // ...= 20% premiers de la valeur
     constexpr float kExpPower = 2.5f;    // durete de la courbe sur le reste
 
     if (rawT <= kSplitKnob)
