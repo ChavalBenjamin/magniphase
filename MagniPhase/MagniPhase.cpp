@@ -39,6 +39,7 @@ MagniPhase::MagniPhase(const InstanceInfo& info)
     const IVStyle blueKnobStyle = knobStyle.WithColor(kFG, IColor(255, 120, 200, 255)); // meme bleu que la courbe du graph
     const IColor kRedGrey(255, 130, 95, 95); // "rouge grisonnant" pour la zone Freq Swap
     const IVStyle swapKnobStyle = knobStyle.WithColor(kFG, kRedGrey);
+    const IColor kDullPink(255, 195, 140, 155); // "rose terne" pour Glitch On/Off
 
     const IRECT bounds = pGraphics->GetBounds();
 
@@ -48,7 +49,23 @@ MagniPhase::MagniPhase(const InstanceInfo& info)
     pGraphics->AttachControl(new IVMenuButtonControl(topRow.GetGridCell(0, 1, 1, 3).GetCentredInside(180.f, 46.f), kParamOverlap, "Overlap"));
     pGraphics->AttachControl(new IVMenuButtonControl(topRow.GetGridCell(0, 2, 1, 3).GetCentredInside(180.f, 46.f), kParamInvertUpstream, "Invert"));
 
-    IRECT belowTop(bounds.L, bounds.T + 60.f, bounds.R, bounds.B);
+    // --- Bande Glitch : pleine largeur, en bas, disposition "paysage" -
+    // comble aussi l'espace qui restait vide en bas a gauche.
+    IRECT glitchBand(bounds.L, bounds.B - 130.f, bounds.R, bounds.B);
+    pGraphics->AttachControl(new IPanelControl(glitchBand, IColor(255, 55, 65, 60)));
+    IRECT glitchArea = glitchBand.GetPadded(-10.f);
+
+    pGraphics->AttachControl(new IVKnobControl(glitchArea.GetGridCell(0, 0, 1, 6).GetCentredInside(64.f), kParamGlitchFreezeTime, "Freeze", knobStyle));
+    pGraphics->AttachControl(new IVKnobControl(glitchArea.GetGridCell(0, 1, 1, 6).GetCentredInside(64.f), kParamGlitchRate, "Rate", knobStyle));
+    pGraphics->AttachControl(new IVMenuButtonControl(glitchArea.GetGridCell(0, 2, 1, 6).GetCentredInside(150.f, 44.f), kParamGlitchMode, "Mode"));
+    pGraphics->AttachControl(new IVMenuButtonControl(glitchArea.GetGridCell(0, 3, 1, 6).GetCentredInside(150.f, 44.f), kParamGlitchFreezeSync, "Sync"));
+    pGraphics->AttachControl(new IVMenuButtonControl(glitchArea.GetGridCell(0, 4, 1, 6).GetCentredInside(150.f, 44.f), kParamGlitchFreezeNote, "Note"));
+
+    IVStyle glitchEnableStyle = DEFAULT_STYLE.WithLabelText(IText(11.f, COLOR_WHITE)).WithColor(kFG, kDullPink);
+    pGraphics->AttachControl(new IVMenuButtonControl(glitchArea.GetGridCell(0, 5, 1, 6).GetCentredInside(170.f, 56.f), kParamGlitchEnable, "Glitch", glitchEnableStyle));
+
+    // --- Zone au-dessus de la bande Glitch, coupee en 2 colonnes ---
+    IRECT belowTop(bounds.L, bounds.T + 60.f, bounds.R, glitchBand.T);
     IRECT leftCol(belowTop.L, belowTop.T, belowTop.L + belowTop.W() * 0.6f, belowTop.B);
     IRECT rightCol(leftCol.R, belowTop.T, belowTop.R, belowTop.B);
 
@@ -59,35 +76,22 @@ MagniPhase::MagniPhase(const InstanceInfo& info)
     pGraphics->AttachControl(new IVKnobControl(mirrorRow.GetGridCell(0, 0, 1, 2).GetCentredInside(74.f), kParamMagMirror, "Mag Mirror", mirrorKnobStyle));
     pGraphics->AttachControl(new IVKnobControl(mirrorRow.GetGridCell(0, 1, 1, 2).GetCentredInside(74.f), kParamPhaseMirror, "Phase Mirror", mirrorKnobStyle));
 
-    IRECT swapPanel(leftCol.L, mirrorPanel.B, leftCol.R, mirrorPanel.B + 170.f);
+    IRECT swapPanel(leftCol.L, mirrorPanel.B, leftCol.R, belowTop.B);
     pGraphics->AttachControl(new IPanelControl(swapPanel, IColor(255, 75, 55, 55)));
     IRECT swapRow = swapPanel.GetPadded(-10.f);
     pGraphics->AttachControl(new IVKnobControl(swapRow.GetGridCell(0, 0, 1, 3).GetCentredInside(64.f), kParamFreqSwap, "Freq Swap", swapKnobStyle));
     pGraphics->AttachControl(new IVKnobControl(swapRow.GetGridCell(0, 1, 1, 3).GetCentredInside(64.f), kParamSwapWindowSize, "Swap Size", swapKnobStyle));
     pGraphics->AttachControl(new IVKnobControl(swapRow.GetGridCell(0, 2, 1, 3).GetCentredInside(88.f), kParamSwapWindowPosition, "Swap Pos", swapKnobStyle));
 
-    // --- Colonne droite : Cycles/Pixel (bleu) au-dessus de l'apercu
-    // reduit, puis le panneau Glitch separe visuellement en dessous ---
+    // --- Colonne droite : Cycles/Pixel (bleu) au-dessus de l'apercu reduit ---
     IRECT windowCtrlRow = IRECT(rightCol.L, rightCol.T, rightCol.R, rightCol.T + 90.f).GetPadded(-10.f);
     pGraphics->AttachControl(new IVKnobControl(windowCtrlRow.GetGridCell(0, 0, 1, 2).GetCentredInside(64.f), kParamWindowCycles, "Cycles", blueKnobStyle));
     pGraphics->AttachControl(new IVKnobControl(windowCtrlRow.GetGridCell(0, 1, 1, 2).GetCentredInside(64.f), kParamWindowPixelLevels, "Pixel", blueKnobStyle));
 
     // Fenetre d'apercu reduite a 35% de sa taille precedente.
-    IRECT windowViewArea = IRECT(rightCol.L, windowCtrlRow.B, rightCol.R, windowCtrlRow.B + 95.f).GetPadded(-10.f);
+    IRECT windowViewArea = IRECT(rightCol.L, windowCtrlRow.B, rightCol.R, belowTop.B).GetPadded(-10.f);
     mWindowView = new WindowPreviewControl(windowViewArea);
     pGraphics->AttachControl(mWindowView);
-
-    IRECT glitchPanel(rightCol.L, windowViewArea.B, rightCol.R, belowTop.B);
-    pGraphics->AttachControl(new IPanelControl(glitchPanel, IColor(255, 55, 65, 60)));
-    IRECT glitchArea = glitchPanel.GetPadded(-10.f);
-
-    pGraphics->AttachControl(new IVKnobControl(glitchArea.GetGridCell(0, 0, 2, 3).GetCentredInside(60.f), kParamGlitchFreezeTime, "Freeze", knobStyle));
-    pGraphics->AttachControl(new IVKnobControl(glitchArea.GetGridCell(0, 1, 2, 3).GetCentredInside(60.f), kParamGlitchRate, "Rate", knobStyle));
-    pGraphics->AttachControl(new IVMenuButtonControl(glitchArea.GetGridCell(0, 2, 2, 3).GetCentredInside(80.f, 30.f), kParamGlitchMode, "Mode"));
-
-    pGraphics->AttachControl(new IVMenuButtonControl(glitchArea.GetGridCell(1, 0, 2, 3).GetCentredInside(80.f, 30.f), kParamGlitchEnable, "Glitch"));
-    pGraphics->AttachControl(new IVMenuButtonControl(glitchArea.GetGridCell(1, 1, 2, 3).GetCentredInside(80.f, 30.f), kParamGlitchFreezeSync, "Sync"));
-    pGraphics->AttachControl(new IVMenuButtonControl(glitchArea.GetGridCell(1, 2, 2, 3).GetCentredInside(80.f, 30.f), kParamGlitchFreezeNote, "Note"));
   };
 #endif
 

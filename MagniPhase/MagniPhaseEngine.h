@@ -150,7 +150,12 @@ private:
     mWindowDirty = false;
 
     // Cycles mis a l'echelle par rapport a la taille FFT (reference 1024).
-    float effectiveCycles = mWindowCyclesBase * ((float)mFFTSize / 1024.f);
+    // Ne met a l'echelle QUE ce qui depasse 1 (pas la valeur entiere) :
+    // garantit que Cycles=1 reste TOUJOURS un Hann parfait (un seul lobe),
+    // quelle que soit la taille FFT - l'ancienne formule (mise a l'echelle
+    // directe) rendait le reglage par defaut tres agressif aux grandes
+    // tailles (jusqu'a 8 lobes a 8192 pour Cycles=1), d'ou le mauvais son.
+    float effectiveCycles = 1.f + (mWindowCyclesBase - 1.f) * ((float)mFFTSize / 1024.f);
 
     // Pixel : 0 = sinus parfait (pas de quantification), 1 = tres
     // anguleux (2 paliers seulement).
