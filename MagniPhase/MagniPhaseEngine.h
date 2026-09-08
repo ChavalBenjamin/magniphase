@@ -93,7 +93,26 @@ public:
   void SetMagMirror(float t) { mMagMirror = std::clamp(t, 0.f, 1.f); }
   void SetPhaseMirror(float t) { mPhaseMirror = std::clamp(t, 0.f, 1.f); }
   void SetFreqSwap(float t) { mFreqSwap = std::clamp(t, 0.f, 1.f); }
-  void SetSwapWindowSize(float size) { mSwapWindowSize = std::clamp(size, 0.f, 1.f); }
+  // Taille de la fenetre de Freq Swap, avec la meme deformation non-lineaire
+  // que SetSwapWindowPosition : les 70% premiers du parcours du bouton
+  // couvrent les 20% premiers de la valeur reelle (zone la plus
+  // interessante, dilatee pour plus de precision), le reste suit une
+  // courbe exponentielle. rawT = position brute du bouton (0-1, lineaire).
+  void SetSwapWindowSize(float rawT)
+  {
+    rawT = std::clamp(rawT, 0.f, 1.f);
+    constexpr float kSplitKnob = 0.7f;   // 70% du bouton...
+    constexpr float kSplitValue = 0.20f; // ...= 20% premiers de la valeur
+    constexpr float kExpPower = 2.5f;    // durete de la courbe sur le reste
+
+    if (rawT <= kSplitKnob)
+      mSwapWindowSize = (rawT / kSplitKnob) * kSplitValue;
+    else
+    {
+      float s = (rawT - kSplitKnob) / (1.f - kSplitKnob);
+      mSwapWindowSize = kSplitValue + (1.f - kSplitValue) * std::pow(s, kExpPower);
+    }
+  }
 
   // Position de la fenetre de Freq Swap, avec deformation non-lineaire :
   // les 70% premiers du parcours du bouton couvrent les 20% premiers de
