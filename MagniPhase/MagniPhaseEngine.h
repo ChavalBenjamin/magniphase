@@ -159,7 +159,12 @@ private:
 
     // Pixel : 0 = sinus parfait (pas de quantification), 1 = tres
     // anguleux (2 paliers seulement).
-    float levels = 256.f - mWindowPixelAmount * (256.f - 2.f);
+    // Courbe non-lineaire (cubique) : concentre la transformation
+    // audible plus tot dans le parcours du bouton (avant, l'essentiel de
+    // l'effet ne se faisait sentir qu'au-dela de 95%, la difference entre
+    // 256 et ~100 paliers etant imperceptible a l'oreille). Extreme
+    // repousse jusqu'a 1 seul palier (quasi binaire) au lieu de 2.
+    float levels = 1.f + std::pow(1.f - mWindowPixelAmount, 3.f) * (256.f - 1.f);
 
     int N = mFFTSize;
     for (int i = 0; i < N; i++)
