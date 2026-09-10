@@ -96,6 +96,10 @@ public:
 
   void SetGlitchMode(int mode) { mGlitchMode = std::clamp(mode, 0, 2); }
 
+  // Volume applique UNIQUEMENT pendant qu'un glitch est actif (capture +
+  // boucle) - le son normal (Idle) n'est jamais affecte. 1.0 = inchange.
+  void SetGlitchVolume(float vol) { mGlitchVolume = std::clamp(vol, 0.f, 1.5f); }
+
   // inL/inR = signal a traiter (stereo), sidechain = signal Aux mono de
   // declenchement (peut etre nullptr si non disponible), outL/outR = sortie.
   void Process(const float* inL, const float* inR, const float* sidechain,
@@ -181,8 +185,8 @@ public:
         case State::Capturing:
           mFragmentBufL[mCaptureIdx] = sL;
           mFragmentBufR[mCaptureIdx] = sR;
-          outL[i] = sL; // passthrough pendant la capture (tres brieve)
-          outR[i] = sR;
+          outL[i] = sL * mGlitchVolume; // passthrough pendant la capture (tres brieve)
+          outR[i] = sR * mGlitchVolume;
           mCaptureIdx++;
           if (mCaptureIdx >= mFragmentSamples)
           {
@@ -195,8 +199,8 @@ public:
           break;
 
         case State::Looping:
-          outL[i] = mFragmentBufL[mLoopReadPos];
-          outR[i] = mFragmentBufR[mLoopReadPos];
+          outL[i] = mFragmentBufL[mLoopReadPos] * mGlitchVolume;
+          outR[i] = mFragmentBufR[mLoopReadPos] * mGlitchVolume;
           mLoopReadPos = (mLoopReadPos + 1) % mFragmentSamples;
 
           // La sortie de boucle du side-chain est geree plus haut
@@ -334,6 +338,7 @@ private:
 
   float mEventsPerSecond = 0.f;
   int mGlitchMode = 0;
+  float mGlitchVolume = 1.f;
   int mSamplesUntilNextTrigger = 0;
   int mInternalSamplesRemaining = 0;
   int mPendingBurstCount = 0;
