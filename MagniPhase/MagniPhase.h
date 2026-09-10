@@ -40,6 +40,7 @@ enum EParams
   kParamGlitchRate,         // 0-100% : frequence du declenchement interne (jamais -> tres souvent)
   kParamGlitchMode,         // Poisson / Rafales / Duree variable
   kParamGlitchEnable,       // Off/On : interrupteur general de toute la section Glitch
+  kParamGlitchVolume,       // 0-150% : volume applique uniquement pendant qu'un glitch est actif
   kNumParams
 };
 

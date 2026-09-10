@@ -22,6 +22,7 @@ MagniPhase::MagniPhase(const InstanceInfo& info)
   GetParam(kParamGlitchRate)->InitPercentage("Rate", 0.);
   GetParam(kParamGlitchMode)->InitEnum("Mode", 0, 3, "", IParam::kFlagsNone, "", "Poisson", "Rafales", "Duree Var.");
   GetParam(kParamGlitchEnable)->InitEnum("Glitch", 0, 2, "", IParam::kFlagsNone, "", "Off", "On");
+  GetParam(kParamGlitchVolume)->InitDouble("Glitch Vol", 100., 0., 150., 0.1, "%");
 
 #if IPLUG_EDITOR
   mMakeGraphicsFunc = [&]() {
@@ -56,13 +57,14 @@ MagniPhase::MagniPhase(const InstanceInfo& info)
     IRECT glitchArea = glitchBand.GetPadded(-10.f);
 
     IVStyle glitchEnableStyle = DEFAULT_STYLE.WithLabelText(IText(12.f, COLOR_WHITE)).WithColor(kFG, kDullPink);
-    pGraphics->AttachControl(new IVMenuButtonControl(glitchArea.GetGridCell(0, 0, 1, 6).GetCentredInside(170.f, 56.f), kParamGlitchEnable, "Glitch", glitchEnableStyle));
+    pGraphics->AttachControl(new IVMenuButtonControl(glitchArea.GetGridCell(0, 0, 1, 7).GetCentredInside(170.f, 56.f), kParamGlitchEnable, "Glitch", glitchEnableStyle));
 
-    pGraphics->AttachControl(new IVKnobControl(glitchArea.GetGridCell(0, 1, 1, 6).GetCentredInside(64.f), kParamGlitchFreezeTime, "SideChain Release", knobStyle));
-    pGraphics->AttachControl(new IVKnobControl(glitchArea.GetGridCell(0, 2, 1, 6).GetCentredInside(64.f), kParamGlitchRate, "Rate", knobStyle));
-    pGraphics->AttachControl(new IVMenuButtonControl(glitchArea.GetGridCell(0, 3, 1, 6).GetCentredInside(150.f, 44.f), kParamGlitchMode, "Mode"));
-    pGraphics->AttachControl(new IVMenuButtonControl(glitchArea.GetGridCell(0, 4, 1, 6).GetCentredInside(150.f, 44.f), kParamGlitchFreezeSync, "Sync"));
-    pGraphics->AttachControl(new IVMenuButtonControl(glitchArea.GetGridCell(0, 5, 1, 6).GetCentredInside(150.f, 44.f), kParamGlitchFreezeNote, "Note"));
+    pGraphics->AttachControl(new IVKnobControl(glitchArea.GetGridCell(0, 1, 1, 7).GetCentredInside(64.f), kParamGlitchFreezeTime, "SideChain Release", knobStyle));
+    pGraphics->AttachControl(new IVKnobControl(glitchArea.GetGridCell(0, 2, 1, 7).GetCentredInside(64.f), kParamGlitchRate, "Rate", knobStyle));
+    pGraphics->AttachControl(new IVKnobControl(glitchArea.GetGridCell(0, 3, 1, 7).GetCentredInside(64.f), kParamGlitchVolume, "Glitch Vol", knobStyle));
+    pGraphics->AttachControl(new IVMenuButtonControl(glitchArea.GetGridCell(0, 4, 1, 7).GetCentredInside(150.f, 44.f), kParamGlitchMode, "Mode"));
+    pGraphics->AttachControl(new IVMenuButtonControl(glitchArea.GetGridCell(0, 5, 1, 7).GetCentredInside(150.f, 44.f), kParamGlitchFreezeSync, "Sync"));
+    pGraphics->AttachControl(new IVMenuButtonControl(glitchArea.GetGridCell(0, 6, 1, 7).GetCentredInside(150.f, 44.f), kParamGlitchFreezeNote, "Note"));
 
     // --- Zone au-dessus de la bande Glitch, coupee en 2 colonnes ---
     IRECT belowTop(bounds.L, bounds.T + 60.f, bounds.R, glitchBand.T);
@@ -153,6 +155,7 @@ void MagniPhase::UpdateEngineParams()
   mGlitchEngine.SetFreezeNoteValue((int)GetParam(kParamGlitchFreezeNote)->Value());
   mGlitchEngine.SetRandomRate((float)(GetParam(kParamGlitchRate)->Value() / 100.0));
   mGlitchEngine.SetGlitchMode((int)GetParam(kParamGlitchMode)->Value());
+  mGlitchEngine.SetGlitchVolume((float)(GetParam(kParamGlitchVolume)->Value() / 100.0));
   mGlitchEngine.SetEnabled((int)GetParam(kParamGlitchEnable)->Value() != 0);
 }
 
@@ -246,6 +249,9 @@ void MagniPhase::OnParamChange(int paramIdx)
       break;
     case kParamGlitchMode:
       mGlitchEngine.SetGlitchMode((int)GetParam(kParamGlitchMode)->Value());
+      break;
+    case kParamGlitchVolume:
+      mGlitchEngine.SetGlitchVolume((float)(GetParam(kParamGlitchVolume)->Value() / 100.0));
       break;
     case kParamGlitchEnable:
       mGlitchEngine.SetEnabled((int)GetParam(kParamGlitchEnable)->Value() != 0);
